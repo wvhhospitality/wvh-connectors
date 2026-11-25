@@ -1,14 +1,14 @@
-"""Reading mail and saving drafts over IMAP (the protocol mail apps use to read a mailbox).
+"""Reading mail, saving drafts, and the few changes the owner can ask for, over IMAP
+(the protocol mail apps use to read a mailbox).
 
-What this module does NOT do is the point of it:
-  - It cannot send. There is no SMTP (the sending protocol) anywhere in this connector.
-  - It never marks mail read: every fetch is BODY.PEEK, and folders being read are
-    opened read-only (EXAMINE).
-  - It never erases anything. No \\Deleted flag, no EXPUNGE, no flags of any kind on
-    received or sent mail.
-  - The one change it makes besides saving a draft: when a new draft replaces one this
-    connector saved earlier, the old one moves to Trash, where Gmail keeps it 30 days.
-    A draft the owner wrote themselves is never touched.
+  - Reading never marks mail read: every fetch is BODY.PEEK, and folders being read
+    are opened read-only (EXAMINE).
+  - The changes this module can make: save a draft; move a draft this connector saved
+    to Trash; flag or star a message; mark a message read; file a copy of a sent
+    message in Sent on servers that don't do that themselves. Each happens only when a
+    tool the owner asked for calls it.
+  - It never erases anything: no \\Deleted flag, no EXPUNGE.
+  - It never sends. Sending is smtp_client.py, and only confirm_send reaches it.
 
 Each mailbox gets a connection on demand, reused for a few minutes, then closed. A
 mailbox that fails is reported as such; it never stops the others.
@@ -517,5 +517,122 @@ def _login_hint(exc: Exception) -> str:
     )
 
 
-# Deliberately absent: sending, replying, forwarding, deleting, expunging, flagging,
-# marking read, moving or copying received or sent mail.
+# ─── Changes the owner asks for ──────────────────────────────────────────────
+
+
+def flag_message(pool: IMAPPool, account: Account, uid: int, flag: str, folder: str = "inbox") -> str:
+    """Star or mark as important. Gmail labels for anything else. Never removes a flag."""
+    flag_lc = (flag or "").strip().lower()
+    with pool.connection(account) as client:
+        target = pool.folder(account, client, folder)
+        client.select_folder(target, readonly=False)
+        try:
+            if flag_lc in ("flagged", "flag", "star", "starred"):
+                client.add_flags([uid], [b"\\Flagged"])
+                return "flagged"
+            if flag_lc == "important":
+                try:
+                    client.add_gmail_labels([uid], ["\\Important"])
+                    return "important"
+                except Exception:  # noqa: BLE001 - not Gmail
+                    client.add_flags([uid], [b"\\Flagged"])
+                    return "flagged"
+            label = re.sub(r"[\r\n]", " ", str(flag)).strip()
+            if not label:
+                raise ValueError("Say which flag: flagged, important, or a Gmail label's name.")
+            client.add_gmail_labels([uid], [label])
+            return f"label {label}"
+        finally:
+            try:
+                client.select_folder(INBOX, readonly=True)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def mark_read(pool: IMAPPool, account: Account, uid: int, folder: str = "inbox") -> None:
+    with pool.connection(account) as client:
+        target = pool.folder(account, client, folder)
+        client.select_folder(target, readonly=False)
+        try:
+            client.add_flags([uid], [b"\\Seen"])
+        finally:
+            try:
+                client.select_folder(INBOX, readonly=True)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def save_sent_copy(pool: IMAPPool, account: Account, msg_bytes: bytes) -> str:
+    """File a sent message in Sent, already read, for servers that don't do it themselves."""
+    with pool.connection(account) as client:
+        sent = pool.folder(account, client, "sent")
+        client.append(sent, msg_bytes, flags=[b"\\Seen"])
+    return sent
+
+
+# ─── Who is who, from the mailbox itself ─────────────────────────────────────
+
+_PEOPLE_LIMIT = 40
+
+
+def _pairs(raw_header: bytes) -> list[tuple[str, str]]:
+    head = email.message_from_bytes(raw_header or b"")
+    out: list[tuple[str, str]] = []
+    for key in ("From", "To", "Cc", "Reply-To"):
+        for name, addr in getaddresses([decode_header(head.get(key))]):
+            if addr:
+                out.append((decode_header(name).strip().strip('"'), addr.strip().lower()))
+    return out
+
+
+def _people_search(pool: IMAPPool, account: Account, gmail_query: str, fallback: list) -> list[tuple[str, str]]:
+    """(display name, address) pairs from the most recent messages a search finds, in All Mail
+    where the server has it. Read-only, nothing marked read."""
+    with pool.connection(account) as client:
+        folder = pool.folder(account, client, "all")
+        try:
+            client.select_folder(folder, readonly=True)
+        except Exception:  # noqa: BLE001 - no All Mail: the inbox will do
+            folder = INBOX
+            client.select_folder(folder, readonly=True)
+        try:
+            uids = client.gmail_search(gmail_query)
+        except Exception:  # noqa: BLE001 - not Gmail
+            uids = client.search(fallback)
+        uids = sorted(uids)[-_PEOPLE_LIMIT:]
+        if not uids:
+            return []
+        fetched = client.fetch(uids, [b"BODY.PEEK[HEADER]"])
+    pairs: list[tuple[str, str]] = []
+    for uid in uids:
+        if uid in fetched:
+            pairs += _pairs(fetched[uid].get(b"BODY[HEADER]") or b"")
+    return pairs
+
+
+def names_for_address(pool: IMAPPool, account: Account, address: str) -> set[str]:
+    """Every display name this mailbox has seen on that address."""
+    address = address.strip().lower()
+    pairs = _people_search(pool, account, f"from:{address} OR to:{address} OR cc:{address}",
+                           ["OR", "FROM", address, "TO", address])
+    return {name for name, addr in pairs if addr == address and name and "@" not in name}
+
+
+def addresses_for_name(pool: IMAPPool, account: Account, name: str) -> set[str]:
+    """Addresses this mailbox has seen under that name (first and last, or first name alone)."""
+    clean = " ".join(name.split())
+    if not clean or '"' in clean:
+        return set()
+    pairs = _people_search(pool, account, f'from:"{clean}" OR to:"{clean}" OR cc:"{clean}"',
+                           ["OR", "FROM", clean, "TO", clean])
+    want = clean.lower().split()
+    found = set()
+    for display, addr in pairs:
+        parts = display.lower().replace(",", " ").split()
+        if parts and (parts[: len(want)] == want or " ".join(parts) == " ".join(want)):
+            found.add(addr)
+    return found
+
+
+# Deliberately absent: sending (see smtp_client.py), deleting, expunging, removing flags,
+# and moving or copying received or sent mail.

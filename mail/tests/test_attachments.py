@@ -107,10 +107,33 @@ def test_asking_for_a_missing_attachment_says_what_is_there(mailbox):
         get(account="Studio", uid=9, filename="other.pdf")
 
 
-def test_attachments_module_cannot_write_files():
-    import re
-
+def test_attachments_never_run_or_follow_anything():
     source = open(att.__file__).read()
-    assert not re.search(r"(?<![\w.])open\(", source), "a file is opened"
-    for forbidden in ("write_bytes", "write_text", "os.open", "mkdir", "subprocess", "tofile"):
+    for forbidden in ("os.system", "shell=True", "exec(", "eval(", "extractall", "webbrowser"):
         assert forbidden not in source, forbidden
+
+
+@pytest.mark.parametrize("bad", ["../../etc/passwd", "/etc", "~/Documents"])
+def test_saves_outside_downloads_are_refused(home, bad):
+    with pytest.raises(att.AttachmentError) as exc:
+        att.resolve_dest(bad, "robin-mail")
+    assert exc.value.code == "dest_outside_downloads"
+
+
+def test_a_symlink_out_of_downloads_is_refused(home):
+    (home / "Downloads").mkdir()
+    (home / "Downloads" / "sneaky").symlink_to(home)
+    with pytest.raises(att.AttachmentError):
+        att.resolve_dest("sneaky", "robin-mail")
+
+
+def test_saving_never_overwrites(home):
+    folder = att.resolve_dest(None, "robin-mail")
+    first = att.write_new(folder, "a.pdf", b"one")
+    second = att.write_new(folder, "a.pdf", b"two")
+    assert first.read_bytes() == b"one" and second.name == "a-1.pdf"
+
+
+def test_saved_names_are_plain(home):
+    assert att.saved_name("2026-11-24", "example.org", "../../Call Sheet: v2.pdf") == "2026-11-24_example.org_Call-Sheet-v2.pdf"
+

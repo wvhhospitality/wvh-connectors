@@ -38,10 +38,10 @@ cd ~/wvh-connectors/slack && python3 -m venv .venv && .venv/bin/pip install -e .
 Then tell Claude about it, under any name you like, such as `robin-slack` (that name is what you will see in Claude):
 
 ```bash
-python3 ~/wvh-connectors/tools/claude_register.py add --name robin-slack --command ~/wvh-connectors/slack/.venv/bin/wvh-slack-mcp --env WVH_SLACK_ALLOW_WRITES=1 --ask confirm_write
+python3 ~/wvh-connectors/tools/claude_register.py add --name robin-slack --command ~/wvh-connectors/slack/.venv/bin/wvh-slack-mcp --ask confirm_write
 ```
 
-Leave out `--env` and `--ask` for a read-only install. If Claude is open, the change waits until you quit Claude, then Claude reopens by itself: the desktop app rewrites its own settings while it runs and would undo an edit made underneath it.
+For a read-only install, add `--env WVH_SLACK_ALLOW_WRITES=0`. If Claude is open, the change waits until you quit Claude, then Claude reopens by itself: the desktop app rewrites its own settings while it runs and would undo an edit made underneath it.
 
 ## Your own Slack app
 
@@ -106,10 +106,18 @@ When you leave a workspace, run `disconnect` first. If you forget, the login sim
 
 - The workspace is checked live with Slack at the preview and again at the confirm.
 - A confirmation works once, for the exact action you saw, and expires in 10 minutes.
-- Posting is off unless the connector is started with `WVH_SLACK_ALLOW_WRITES=1`. Leave that out and it is read-only.
+- Posting is on out of the box, and its tools appear once a workspace is connected. To make an install read-only, start it with `WVH_SLACK_ALLOW_WRITES=0`, or put `sending: off` in `workspaces.yaml` (do that on any Mac that runs scheduled jobs).
 - Reading never joins a channel, because joining would post a visible notice.
 
 We also recommend setting Claude to ask for your approval every time the confirm tool is used. `--ask confirm_write` above does this.
+
+## Nicknames and follow-ups
+
+You shouldn't have to say the magic word.
+
+- **Nicknames.** Say "Slack Danny." If Claude knows Danny is Dana Northwind, it prepares the post to Dana and the preview says so: "You said Danny. This goes to Dana Northwind." Your yes sends it, and teaches the nickname for good. The list lives on your Mac at `~/Library/Application Support/wvh-connectors/nicknames.yaml`, shared with the mail and texts connectors, so you teach each nickname once. A nickname that already means someone else is refused, never overwritten.
+- **Follow-ups.** In a conversation already going, the post you just confirmed there or a thread Claude just read with you, "tell him yes" continues it without naming the workspace or channel again, for 12 hours. The preview says which conversation it's continuing, and still waits for your yes.
+- **What doesn't change.** Every post is previewed and needs your yes. A hold is absolute. A message that names another company is refused. Passwords, keys and Social Security numbers never go out. `@channel` only when you ask for it.
 
 ## What Claude can do with it
 

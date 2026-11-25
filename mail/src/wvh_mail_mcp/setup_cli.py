@@ -5,6 +5,11 @@
     wvh-mail-setup --install robin-mail add robin@example.com [--label Work]
     wvh-mail-setup --install robin-mail password robin@example.com
     wvh-mail-setup --install robin-mail remove robin@example.com
+    wvh-mail-setup --install robin-mail identity add Robin --signature ~/Desktop/robin.html --default
+    wvh-mail-setup --install robin-mail identity list
+    wvh-mail-setup --install robin-mail sending on|off
+    wvh-mail-setup --install robin-mail drafts on|off
+    wvh-mail-setup --install robin-mail import <older accounts.yaml> [--signatures <folder>]
 
 `add` asks for the mailbox's app password itself. In a terminal it is a hidden
 prompt. When Claude runs it, there is no terminal, so a small Mac window opens
@@ -18,6 +23,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -39,10 +45,12 @@ from .config import (
     has_password,
     home_dir,
     install_name,
+    is_legacy,
     keychain_service,
     load_config,
     read_raw,
     settings_path,
+    signatures_dir,
 )
 
 # Under two minutes, so a Claude running this with its usual command time limit sees the answer.
@@ -155,6 +163,10 @@ def cmd_status(install: str, probe: bool = True) -> int:
     cfg = load_config(install=install)
     print(f"Owner:            {cfg.owner_name}")
     print("Time zone:        " + (cfg.timezone or "this Mac's own"))
+    print(f"Sending:          {'on (every send is previewed and needs a yes)' if cfg.sending else 'off on this Mac'}")
+    print(f"Drafts:           {'on' if cfg.drafts else 'off on this Mac'}")
+    if cfg.identities:
+        print("Identities:       " + ", ".join(i.name + (" (drafts only)" if i.drafts_only else "") for i in cfg.identities))
     if not cfg.accounts:
         print("\nNo mailboxes yet.")
         return 0
@@ -275,6 +287,150 @@ def cmd_remove(install: str, email: str) -> int:
     return 0
 
 
+def _copy_signature(install: str, source: str) -> str:
+    """Copy a signature file (and the .txt beside it, if any) into the settings folder."""
+    src = Path(os.path.expanduser(source))
+    if not src.is_file() or src.suffix.lower() not in (".html", ".htm"):
+        raise ConfigError(f"{source} isn't an HTML signature file.")
+    folder = signatures_dir(install)
+    folder.mkdir(parents=True, exist_ok=True)
+    os.chmod(folder.parent, 0o700)
+    name = re.sub(r"[^A-Za-z0-9._ -]", "-", src.name).lstrip(".-") or "signature.html"
+    shutil.copy2(src, folder / name)
+    txt = src.with_suffix(".txt")
+    if txt.is_file():
+        shutil.copy2(txt, (folder / name).with_suffix(".txt"))
+    return name
+
+
+def cmd_identity(install: str, action: str, name: str | None, signature: str | None, domains: list[str],
+                 drafts_only: bool, default: bool, account: str | None) -> int:
+    path = settings_path(install)
+    data = read_raw(path)
+    idents = [i for i in (data.get("identities") or []) if isinstance(i, dict)]
+    if action == "list":
+        if not idents:
+            print("No identities yet. Mail goes out unsigned unless a mailbox has its own signature.")
+            return 0
+        for i in idents:
+            extra = [f"signature {i['signature']}"] if i.get("signature") else []
+            extra += [f"{d}: {f}" for d, f in (i.get("by_domain") or {}).items()]
+            extra += ["drafts only"] if i.get("drafts_only") else []
+            mark = " (default)" if str(data.get("default_identity", "")).lower() == str(i.get("name", "")).lower() else ""
+            print(f"  {i.get('name')}{mark}: " + (", ".join(extra) or "no signature"))
+        return 0
+    if not name or not name.strip():
+        print("Give the identity a name, such as: identity add Robin")
+        return 2
+    name = name.strip()
+    entry = next((i for i in idents if str(i.get("name", "")).lower() == name.lower()), None)
+    if entry is None:
+        entry = {"name": name}
+        idents.append(entry)
+    if signature:
+        entry["signature"] = _copy_signature(install, signature)
+    for pair in domains or []:
+        dom, sep, file = pair.partition("=")
+        if not sep:
+            print(f"--domain takes domain=file.html, not {pair!r}")
+            return 2
+        entry.setdefault("by_domain", {})[dom.strip().lower()] = _copy_signature(install, file.strip())
+    if drafts_only:
+        entry["drafts_only"] = True
+    data["identities"] = idents
+    if default:
+        data["default_identity"] = name
+    if account:
+        accounts = [a for a in (data.get("accounts") or []) if isinstance(a, dict)]
+        target = next((a for a in accounts if str(a.get("email", "")).lower() == account.lower()
+                       or str(a.get("label", "")).lower() == account.lower()), None)
+        if target is None:
+            print(f"No mailbox called {account!r}.")
+            return 2
+        target["identity"] = name
+        data["accounts"] = accounts
+    write_settings(path, data)
+    load_config(install=install)  # refuse to leave a file the server can't read
+    print(f"Saved identity {name}" + (" (drafts only)" if entry.get("drafts_only") else "") + ".")
+    return 0
+
+
+def cmd_switch(install: str, which: str, value: str) -> int:
+    path = settings_path(install)
+    data = read_raw(path)
+    data[which] = value == "on"
+    write_settings(path, data)
+    if which == "sending":
+        print("Sending is " + ("on: every send is previewed and goes out only after a yes." if value == "on"
+                               else "off on this Mac: no tool can send from here.") + " Restart Claude to apply it.")
+    else:
+        print("Drafts are " + ("on." if value == "on" else "off on this Mac: no tool can save or remove a draft.")
+              + " Restart Claude to apply it.")
+    return 0
+
+
+def convert_legacy(raw: dict) -> dict:
+    """The older WvH Mail format into this one. No passwords move: the Keychain service carries over."""
+    imap = raw.get("imap") or {}
+    services = {str(a.get("secret_ref", "")).split("/", 1)[0] for a in raw.get("accounts") or [] if isinstance(a, dict) and "/" in str(a.get("secret_ref", ""))}
+    out: dict = {}
+    if len(services) == 1:
+        out["keychain_service"] = services.pop()
+    elif services:
+        raise ConfigError("The older file uses more than one Keychain service; convert it by hand.")
+    accounts = []
+    for a in raw.get("accounts") or []:
+        if not isinstance(a, dict) or not a.get("email"):
+            continue
+        entry: dict = {"email": str(a["email"]).strip().lower()}
+        if a.get("client_code"):
+            entry["label"] = str(a["client_code"]).strip()
+        host = a.get("imap_host") or imap.get("host")
+        if host and host != DEFAULT_IMAP_HOST:
+            entry["imap_host"] = host
+        port = a.get("imap_port") or imap.get("port")
+        if port and int(port) != DEFAULT_IMAP_PORT:
+            entry["imap_port"] = int(port)
+        if a.get("signature"):
+            entry["signature"] = str(a["signature"]).strip()
+        accounts.append(entry)
+    out["accounts"] = accounts
+    send = (raw.get("defaults") or {}).get("send") or {}
+    limits = {k: int(send[k]) for k in ("max_per_window", "window_seconds", "max_recipients") if k in send}
+    if limits:
+        out["send_limits"] = limits
+    return out
+
+
+def cmd_import(install: str, source: str, signatures: str | None) -> int:
+    src = Path(os.path.expanduser(source))
+    raw = read_raw(src)
+    if not is_legacy(raw):
+        print(f"{src} doesn't look like the older WvH Mail format. Nothing changed.")
+        return 1
+    converted = convert_legacy(raw)
+    path = settings_path(install)
+    current = read_raw(path)
+    if current.get("accounts"):
+        print(f"{path} already has mailboxes. Import into a new install name, or move that file aside first.")
+        return 1
+    merged = {**current, **converted}
+    copied = []
+    if signatures:
+        sig_src = Path(os.path.expanduser(signatures))
+        for f in sorted(sig_src.glob("*.htm*")):
+            copied.append(_copy_signature(install, str(f)))
+    write_settings(path, merged)
+    load_config(install=install)
+    print(f"Imported {len(converted['accounts'])} mailboxes into {path}.")
+    if converted.get("keychain_service"):
+        print(f"Their app passwords stay where they are, in the Keychain under {converted['keychain_service']}.")
+    if copied:
+        print(f"Copied {len(copied)} signature files into {signatures_dir(install)}.")
+    print("Run status to check each one signs in.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="wvh-mail-setup", description="Set up WvH Mail on this Mac.")
     parser.add_argument("--install", help="this install's name, such as robin-mail (default: WVH_MAIL_INSTALL, else wvh-mail)")
@@ -293,6 +449,21 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("email")
     p = sub.add_parser("remove", help="take a mailbox away and forget its login")
     p.add_argument("email")
+    p = sub.add_parser("identity", help="who signs mail, and with which signature")
+    p.add_argument("action", choices=["add", "list"])
+    p.add_argument("name", nargs="?")
+    p.add_argument("--signature", help="an HTML signature file to copy in (a .txt beside it is the plain-text version)")
+    p.add_argument("--domain", action="append", default=[], help="domain=file.html: a different signature when sending from that domain")
+    p.add_argument("--drafts-only", action="store_true", help="this identity may draft but never send")
+    p.add_argument("--default", action="store_true", help="sign with it unless told otherwise")
+    p.add_argument("--account", help="sign this one mailbox's mail with it")
+    p = sub.add_parser("sending", help="let this Mac send (every send still needs a yes), or not")
+    p.add_argument("value", choices=["on", "off"])
+    p = sub.add_parser("drafts", help="let this Mac save drafts, or not")
+    p.add_argument("value", choices=["on", "off"])
+    p = sub.add_parser("import", help="bring in mailboxes from the older WvH Mail settings file")
+    p.add_argument("source")
+    p.add_argument("--signatures", help="a folder of signature files to copy in")
     args = parser.parse_args(argv)
     try:
         install = install_name(args.install)
@@ -306,6 +477,13 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_password(install, args.email)
         if args.command == "remove":
             return cmd_remove(install, args.email)
+        if args.command == "identity":
+            return cmd_identity(install, args.action, args.name, args.signature, args.domain,
+                                args.drafts_only, args.default, args.account)
+        if args.command in ("sending", "drafts"):
+            return cmd_switch(install, args.command, args.value)
+        if args.command == "import":
+            return cmd_import(install, args.source, args.signatures)
     except ConfigError as exc:
         print(exc)
         return 2

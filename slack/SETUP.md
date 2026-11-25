@@ -49,7 +49,7 @@ cd ~/wvh-connectors/slack && python3 -m venv .venv && .venv/bin/pip install -e .
 
 Then ask one more:
 
-3. "Should Claude be able to post in Slack when you tell it to, or only read?" Explain that every post is shown to them first and needs their approval. If they say read only, leave posting off in step 6.
+3. Tell them, in these words or close: "Claude can post in Slack when you tell it to. Every post is shown to you first, who, where and the words, and goes only after your yes." If they'd rather it only read, note that for step 6.
 
 ## 4. Save their name
 
@@ -99,17 +99,13 @@ Run `status` once more and confirm the ones they chose are under "Connected."
 
 Use the name from step 3. One command registers it with both the Claude desktop app and Claude Code, keeps every other connector exactly as it was, and makes a dated `.bak` copy of each settings file first.
 
-- **Posting allowed:** also turns on posting and makes Claude ask before every post.
+Posting is on, with every post previewed and waiting for their yes:
 
 ```bash
-python3 ~/wvh-connectors/tools/claude_register.py add --name robin-slack --command ~/wvh-connectors/slack/.venv/bin/wvh-slack-mcp --env WVH_SLACK_ALLOW_WRITES=1 --ask confirm_write
+python3 ~/wvh-connectors/tools/claude_register.py add --name robin-slack --command ~/wvh-connectors/slack/.venv/bin/wvh-slack-mcp --ask confirm_write
 ```
 
-- **Read only:**
-
-```bash
-python3 ~/wvh-connectors/tools/claude_register.py add --name robin-slack --command ~/wvh-connectors/slack/.venv/bin/wvh-slack-mcp
-```
+Only if they asked for read only, add `--env WVH_SLACK_ALLOW_WRITES=0` to that line.
 
 Replace `robin-slack` with their name from step 3. Do not edit Claude's settings files by hand.
 
@@ -121,7 +117,9 @@ The chat ends when Claude quits, so say this first, in a few lines:
 
 - what the connector is called and which workspaces are connected,
 - that they can say "what's new in Slack," "read #channel in Northwind," or "ask Dana whether Friday works,"
-- that posting is on or off, and that every post is previewed first and needs their yes,
+- that every post is previewed first and needs their yes (or that it only reads, if they chose that),
+- that nicknames work: if they say "Slack Danny" and Claude knows Danny is Dana, the preview shows "Danny means Dana Northwind" once, and their yes teaches it to Slack, mail and texts for good,
+- that in a conversation already going, "tell him yes" just works: the preview names the conversation it's continuing,
 - that their settings are in `~/Library/Application Support/wvh-slack`, and their logins are in the Mac's Keychain,
 - that "update my Slack connector" will fetch the newest version.
 

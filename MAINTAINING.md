@@ -32,4 +32,12 @@ After that it runs before every commit and every push from this Mac.
 
 ## Releasing
 
-Tag each release (`git tag slack-v0.3.0`) so a bad update can be rolled back to a known one.
+Everyone runs the same version: the practice, its team and its clients. A release is:
+
+1. Make the change in this clone, with a test for any change in behavior.
+2. Bump `version` in that connector's `pyproject.toml`.
+3. Run its tests, then the privacy check (it also runs on every commit and push).
+4. Commit, tag `<connector>-vX.Y.Z` (for example `slack-v0.4.0`), and push `main` and the tag.
+5. Each Mac updates with the one line in the README's "Updating" section, then restarts Claude.
+
+A bad release is rolled back by checking out the previous tag on the Macs that need it.

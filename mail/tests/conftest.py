@@ -8,6 +8,9 @@ gets its own empty home folder.
 from __future__ import annotations
 
 import email
+import email.utils
+import re
+import smtplib
 from datetime import datetime
 from pathlib import Path
 
@@ -47,6 +50,9 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("WVH_MAIL_HOME", raising=False)
     monkeypatch.delenv("WVH_MAIL_OWNER", raising=False)
+    for name in ("WVH_MAIL_CONFIG", "WVH_MAIL_SENDING", "WVH_MAIL_DRAFTS", "WVH_MAIL_REMOTE_DRAFTS",
+                 "WVH_MAIL_REMOTE_ACCOUNTS", "WVH_MAIL_REMOTE_PORT"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("WVH_MAIL_INSTALL", "robin-mail")
     ring = MemoryKeyring()
     keyring.set_keyring(ring)
@@ -87,10 +93,15 @@ accounts:
 
 
 def raw_message(subject="Friday works", sender="dana@example.org", to="robin@example.com",
-                body="See you Friday.", message_id="<abc123@example.org>", attachments=()) -> bytes:
+                body="See you Friday.", message_id="<abc123@example.org>", attachments=(), cc=None,
+                references=None) -> bytes:
     msg = email.message.EmailMessage()
     msg["From"] = sender
     msg["To"] = to
+    if cc:
+        msg["Cc"] = cc
+    if references:
+        msg["References"] = references
     msg["Subject"] = subject
     msg["Message-ID"] = message_id
     msg["Date"] = "Tue, 24 Nov 2026 09:15:00 -0800"
@@ -105,8 +116,9 @@ def envelope(raw: bytes) -> Envelope:
     msg = email.message_from_bytes(raw)
 
     def addr(value):
-        box, host = value.split("@")
-        return (Address(None, None, box.encode(), host.encode()),)
+        name, address = email.utils.parseaddr(value)
+        box, host = address.split("@")
+        return (Address(name.encode() if name else None, None, box.encode(), host.encode()),)
 
     return Envelope(
         datetime(2026, 11, 24, 9, 15), msg["Subject"].encode(), addr(msg["From"]), addr(msg["From"]),
@@ -139,7 +151,10 @@ class FakeImap:
 
     def gmail_search(self, query):
         self.calls.append(("gmail_search", query))
-        return [uid for uid, (raw, _f) in self.folders[self.selected].items() if query.lower() in raw.decode().lower()]
+        # Plain words match anywhere; from:/to:/cc: terms joined by OR match any one of them.
+        terms = [t.split(":", 1)[-1].strip().strip('"') for t in re.split(r"\s+OR\s+", query)] if " OR " in query else [query]
+        box = self.folders[self.selected]
+        return [uid for uid, (raw, _f) in box.items() if any(t.lower() in raw.decode().lower() for t in terms if t)]
 
     def fetch(self, uids, items):
         self.calls.append(("fetch", tuple(uids), tuple(items)))
@@ -164,7 +179,17 @@ class FakeImap:
     def find_special_folder(self, flag):
         return {b"\\Sent": "[Gmail]/Sent Mail", b"\\Drafts": "[Gmail]/Drafts", b"\\Trash": "[Gmail]/Trash", b"\\All": "[Gmail]/All Mail"}.get(flag)
 
-    # the only two changes the connector may make
+    # changes the owner can ask for: flags and mark read
+    def add_flags(self, uids, flags):
+        self.calls.append(("add_flags", tuple(uids), tuple(flags)))
+        for uid in uids:
+            raw, old = self.folders[self.selected][uid]
+            self.folders[self.selected][uid] = (raw, tuple(old) + tuple(f for f in flags if f not in old))
+
+    def add_gmail_labels(self, uids, labels):
+        self.calls.append(("add_gmail_labels", tuple(uids), tuple(labels)))
+
+    # saving a draft, filing a sent copy, moving the connector's own draft to Trash
     def append(self, folder, msg, flags=()):
         self.calls.append(("append", folder, tuple(flags)))
         uid = self.next_uid
@@ -206,3 +231,62 @@ def fake_imap() -> FakeImap:
     client = FakeImap()
     srv.state._pool = FakePool(client)
     return client
+
+
+# ─── A fake mail server for sending ─────────────────────────────────────────
+
+
+class FakeSmtp:
+    """Stands in for smtplib.SMTP_SSL and smtplib.SMTP. Records every message handed over."""
+
+    sent: list = []
+    logins: list = []
+
+    def __init__(self, host, port, context=None, timeout=None):
+        self.host, self.port = host, port
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def starttls(self, context=None):
+        FakeSmtp.logins.append(("starttls", self.host))
+
+    def login(self, user, password):
+        FakeSmtp.logins.append((user, self.host, self.port))
+
+    def send_message(self, msg):
+        FakeSmtp.sent.append(msg)
+
+
+@pytest.fixture
+def fake_smtp(monkeypatch):
+    FakeSmtp.sent, FakeSmtp.logins = [], []
+    monkeypatch.setattr(smtplib, "SMTP_SSL", FakeSmtp)
+    monkeypatch.setattr(smtplib, "SMTP", FakeSmtp)
+    return FakeSmtp
+
+
+@pytest.fixture(autouse=True)
+def no_real_smtp(monkeypatch):
+    """No test can reach a real mail server, whatever it does."""
+    def refuse(*a, **k):
+        raise AssertionError("a test tried to reach a real mail server")
+    monkeypatch.setattr(smtplib, "SMTP_SSL", refuse)
+    monkeypatch.setattr(smtplib, "SMTP", refuse)
+
+
+@pytest.fixture(autouse=True)
+def no_contacts(monkeypatch):
+    """Contacts on this Mac are never read in tests; a test can supply its own."""
+    from wvh_mail_mcp import contacts
+    monkeypatch.setattr(contacts, "_rows", lambda: [])
+
+
+@pytest.fixture(autouse=True)
+def nicknames_file(tmp_path, monkeypatch):
+    path = tmp_path / "nicknames.yaml"
+    monkeypatch.setenv("WVH_NICKNAMES", str(path))
+    return path

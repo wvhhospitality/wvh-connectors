@@ -60,6 +60,7 @@ class Target:
 class Finding:
     blocks: list[str] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
+    remember: tuple[str, str] | None = None   # (nickname, full name), saved only after the owner's yes
 
     @property
     def read_back(self) -> bool:
@@ -76,6 +77,7 @@ class Pending:
     instruction: str
     read_back: bool
     created: float
+    remember: tuple[str, str] | None = None
 
 
 class Tickets:
@@ -139,6 +141,10 @@ def _words(text: str) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9]{3,}", normalize(text)) if w not in _FILLER}
 
 
+def _same_person(a: str, b: str) -> bool:
+    return bool(a) and normalize(a) == normalize(b)
+
+
 def review(
     *,
     ws: Workspace,
@@ -146,6 +152,9 @@ def review(
     instruction: str,
     target: Target | None,
     texts: list[str],
+    said_as: str = "",
+    continuing: str = "",
+    nicknames: dict[str, str] | None = None,
 ) -> Finding:
     found = Finding()
     body = "\n".join(t for t in texts if t)
@@ -159,16 +168,50 @@ def review(
         mentions(instruction, p) for p in realm_phrases(ws)
     )
     named = _words(instruction)
+    nicks = nicknames or {}
+    said = (said_as or "").strip()
     if target is not None and instruction.strip():
         wanted = _words(target.label) | {w for person in target.people for w in _words(person)}
         # "Me" names the recipient only when the recipient is the owner's own account.
         # It never stands in for anyone else, and it never names the workspace.
         said_me = target.to_self and names_self(instruction)
-        if not realm_named and not (named & wanted) and not said_me:
-            found.blocks.append(
-                f"{owner_cap()}'s instruction doesn't name {target.label}, anyone who'd see this, "
-                f"or {ws.label}. Nothing here says this is the place that was meant."
-            )
+        everyone = [target.label, *target.people]
+        # A nickname the owner already confirmed counts as naming the person.
+        by_nickname = any(
+            mentions(instruction, nick) and any(_same_person(full, p) for p in everyone)
+            for nick, full in nicks.items()
+        )
+        if said:
+            known = nicks.get(normalize(said))
+            if not mentions(instruction, said):
+                found.blocks.append(
+                    f"'{said}' isn't in {owner_name()}'s words, so it can't stand for who was meant."
+                )
+            elif known and not any(_same_person(known, p) for p in everyone):
+                found.blocks.append(
+                    f"{owner_cap()} calls {known} '{said}', not {target.label}. Check who was meant."
+                )
+            elif known:
+                by_nickname = True
+            else:
+                by_nickname = True
+                found.flags.append(
+                    f"{owner_cap()} said '{said}'. This goes to {target.label}. "
+                    + (f"{owner_cap()}'s yes also teaches every connector that {said} means {target.label}."
+                       if target.kind == "person" else "Confirm that's the place that was meant.")
+                )
+                if target.kind == "person" and not target.to_self:
+                    found.remember = (said, target.label)
+        if not realm_named and not (named & wanted) and not said_me and not by_nickname:
+            if continuing:
+                # A follow-up in a conversation already going: allowed, but always read back.
+                found.flags.append(f"Continuing {continuing}. Confirm it's the same conversation.")
+            else:
+                found.blocks.append(
+                    f"{owner_cap()}'s instruction doesn't name {target.label}, anyone who'd see this, "
+                    f"or {ws.label}. Nothing here says this is the place that was meant. If {owner_name()} "
+                    "used a nickname, pass it as said_as."
+                )
 
     for other in others:
         hit = next((p for p in realm_phrases(other) if mentions(body, p)), None)

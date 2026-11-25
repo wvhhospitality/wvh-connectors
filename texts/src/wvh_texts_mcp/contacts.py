@@ -1,8 +1,10 @@
-"""Turn names and nicknames into people, and say who is on the allow-list.
+"""Turn names and nicknames into people, and say who is on the list.
 
-Names come from the Mac's Contacts databases, read directly and read-only, plus the
-nickname list in settings. Being in Contacts never makes anyone readable: only the
-numbers and addresses saved on the allow-list at setup do.
+Names come from the Mac's Contacts databases, read directly and read-only, plus two
+nickname lists: the one shared by every WvH connector on this Mac (nicknames.py) and
+this install's own. Being in Contacts lets the owner read or text someone by name when
+they ask. Being on the list is what lets a sweep (what's new, unnamed searches) reach
+them. A nickname never puts anyone on the list.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import nicknames as shared_nicknames
 from .config import Config, contacts_root, is_handle, normalize_handle
 from .db import NoAccess, open_readonly
 
@@ -21,14 +24,18 @@ MIN_PARTIAL = 2  # a one-letter partial match would just list the address book
 class Person:
     name: str
     handles: set[str] = field(default_factory=set)  # every number and address known for them
-    allowed: set[str] = field(default_factory=set)  # the ones on the allow-list: what may be read
+    allowed: set[str] = field(default_factory=set)  # the ones a sweep may read (on the list)
     nicknames: set[str] = field(default_factory=set)  # lowercase
     organization: str = ""
     in_contacts: bool = True
+    listed: bool = False  # on the list
+    client: str | None = None
+    opted_out: bool = False
+    held: bool = False  # on the list, but left out of sweeps
 
     @property
     def on_allow_list(self) -> bool:
-        return bool(self.allowed)
+        return self.listed and bool(self.allowed) and not self.opted_out
 
     @property
     def words(self) -> set[str]:
@@ -93,8 +100,15 @@ def read_cards(root: Path | None = None) -> list[Person]:
     return people
 
 
+def all_nicknames(config: Config) -> dict[str, str]:
+    """This install's own nicknames first, then the shared list fills in the rest."""
+    merged = dict(shared_nicknames.load())
+    merged.update(config.nicknames)
+    return merged
+
+
 class Directory:
-    """Contacts, merged by name, with the allow-list laid over it."""
+    """Contacts, merged by name, with the list, holds, opt-outs and nicknames laid over it."""
 
     def __init__(self, cards: list[Person], config: Config):
         merged: dict[str, Person] = {}
@@ -111,24 +125,33 @@ class Directory:
             key = entry.name.lower()
             if key not in merged:
                 merged[key] = Person(entry.name, set(entry.handles), in_contacts=False)
-            merged[key].allowed |= set(entry.handles)
-            merged[key].handles |= set(entry.handles)
+            person = merged[key]
+            person.listed = True
+            person.client = entry.client
+            person.handles |= set(entry.handles)
+            # A name-only entry means every number and address on their card.
+            person.allowed |= set(entry.handles) if entry.handles else set(person.handles)
 
-        self._nicknames = {nick: name.lower() for nick, name in config.nicknames.items()}
+        for person in merged.values():
+            person.opted_out = config.is_opted_out(person.name, person.handles)
+            person.held = person.name.lower() in config.sweep_hold
+
+        self._nickname_names = dict(all_nicknames(config))  # nickname -> the full name as written
+        self._nicknames = {nick: name.lower() for nick, name in self._nickname_names.items()}
         for nick, target in self._nicknames.items():
             if target in merged:
                 merged[target].nicknames.add(nick)
 
         self.people = sorted(merged.values(), key=lambda p: p.name.lower())
         self.by_handle: dict[str, Person] = {}
-        # People on the allow-list first, so a number shared with another card keeps the allowed name.
-        for person in sorted(self.people, key=lambda p: not p.on_allow_list):
+        # People on the list first, so a number shared with another card keeps the listed name.
+        for person in sorted(self.people, key=lambda p: not p.listed):
             for handle in person.handles:
                 self.by_handle.setdefault(handle, person)
 
     @classmethod
     def load(cls, config: Config, root: Path | None = None) -> tuple["Directory", bool]:
-        """The directory, and whether Contacts could be read. Without Contacts, the allow-list still works."""
+        """The directory, and whether Contacts could be read. Without Contacts, the list still works."""
         try:
             return cls(read_cards(root), config), True
         except NoAccess:
@@ -137,12 +160,20 @@ class Directory:
     def allowed_people(self) -> list[Person]:
         return [person for person in self.people if person.on_allow_list]
 
+    def sweepable(self) -> list[Person]:
+        """The list, minus holds and opt-outs: who an automatic sweep may reach."""
+        return [person for person in self.allowed_people() if not person.held]
+
     def name_for(self, handle: str) -> str | None:
         person = self.by_handle.get(normalize_handle(handle))
         return person.name if person else None
 
+    def nickname_target(self, nickname: str) -> str | None:
+        """The full name a nickname already means, or None."""
+        return self._nickname_names.get(nickname.strip().lower())
+
     def resolve(self, query: str) -> Resolution:
-        """Best match first. The owner's own nickname list outranks everything."""
+        """Best match first. The owner's own nicknames outrank everything."""
         text = query.strip()
         low = text.lower()
         if not low:
@@ -152,10 +183,12 @@ class Directory:
             known = self.by_handle.get(handle)
             if known is None:
                 return Resolution([Person(name=text, handles={handle}, in_contacts=False)], "number or email")
-            if handle not in known.allowed:
-                # The card may be allowed for other numbers, but not this one.
-                return Resolution([Person(known.name, {handle}, set(), organization=known.organization)], "number or email")
-            return Resolution([Person(known.name, {handle}, {handle}, organization=known.organization)], "number or email")
+            # Only that one number: asking for a number reads that number's thread.
+            narrowed = Person(
+                known.name, {handle}, {handle} & known.allowed, set(known.nicknames), known.organization,
+                known.in_contacts, known.listed, known.client, known.opted_out, known.held,
+            )
+            return Resolution([narrowed], "number or email")
 
         target = self._nicknames.get(low)
         words = low.split()

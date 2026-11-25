@@ -1,3 +1,3 @@
-"""WvH Texts: read the text messages on this Mac, only from people you allow. It cannot send."""
+"""WvH Texts: your text messages in Claude. Reads who you name, sweeps only your list, sends only on your yes."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

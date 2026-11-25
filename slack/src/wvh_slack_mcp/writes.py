@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 from slack_sdk.errors import SlackApiError
 
+from . import nicknames
 from .config import Config, Workspace, owner_name, resolve_config_path
 from .discretion import Pending, Target, Tickets, normalize, review
 from .slack_client import SlackError, WorkspacePool, _friendly
@@ -296,6 +297,56 @@ def _audit(cfg: Config, event: str, **fields: Any) -> None:
         log.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+FOLLOW_UP_SECONDS = 12 * 3600  # how long a conversation counts as "already going"
+
+# Conversations Claude read in this server process: (client_code, channel ref, channel id, when).
+_RECENT_READS: list[tuple[str, str, str, float]] = []
+
+
+def note_read(client_code: str, channel_ref: str, channel_id: str = "") -> None:
+    """Remember that the owner had Claude read this conversation, for "tell him yes" a moment later."""
+    _RECENT_READS.append((client_code, channel_ref or "", channel_id or "", time.time()))
+    del _RECENT_READS[:-50]
+
+
+def _same_place(target: Target, ref: str, ref_id: str) -> bool:
+    if ref_id and ref_id == target.id:
+        return True
+    a, b = normalize(ref).lstrip("#@"), normalize(target.label).lstrip("#@")
+    return bool(a) and a == b
+
+
+def _continuing(cfg: Config, ws: Workspace, target: Target | None) -> str:
+    """Is this the conversation already going? The owner's last confirmed post there, or a read just now."""
+    if target is None or target.kind == "object":
+        return ""
+    now = time.time()
+    path = (cfg.source_path or resolve_config_path()).with_name("writes.jsonl")
+    try:
+        lines = path.read_text().splitlines()[-500:]
+    except OSError:
+        lines = []
+    for line in reversed(lines):
+        try:
+            row = json.loads(line)
+            when = datetime.fromisoformat(row["at"]).timestamp()
+        except (ValueError, KeyError, TypeError):
+            continue
+        if now - when > FOLLOW_UP_SECONDS:
+            break
+        if row.get("event") != "done" or row.get("client_code") != ws.client_code:
+            continue
+        if _same_place(target, row.get("to") or "", row.get("target_id") or ""):
+            local = datetime.fromtimestamp(when).strftime("%-I:%M %p")
+            return f"your conversation with {target.label} in {ws.label} (you last wrote at {local})"
+    for code, ref, ref_id, when in reversed(_RECENT_READS):
+        if now - when > FOLLOW_UP_SECONDS:
+            break
+        if code == ws.client_code and _same_place(target, ref, ref_id):
+            return f"the conversation with {target.label} in {ws.label} that Claude just read"
+    return ""
+
+
 def _content(args: dict, spec: Spec) -> str:
     return " | ".join(str(args[k]) for k in spec.text_keys if args.get(k))
 
@@ -314,8 +365,9 @@ def _context(pool: WorkspacePool, ws: Workspace, target: Target | None) -> list[
 def prepare(cfg: Config, pool: WorkspacePool, tickets: Tickets, tool: str, raw: dict) -> dict:
     """Preview only. Nothing here touches Slack except to read."""
     spec = SPECS[tool]
-    args = {k: v for k, v in raw.items() if k not in ("workspace", "instruction")}
+    args = {k: v for k, v in raw.items() if k not in ("workspace", "instruction", "said_as")}
     instruction = (raw.get("instruction") or "").strip()
+    said_as = (raw.get("said_as") or "").strip()
     ws = cfg.find(raw["workspace"])  # refuses frozen and unconnected workspaces
 
     try:
@@ -337,7 +389,10 @@ def prepare(cfg: Config, pool: WorkspacePool, tickets: Tickets, tool: str, raw: 
 
     others = [w for w in cfg.workspaces if w.client_code != ws.client_code]
     texts = [str(args[k]) for k in spec.text_keys if args.get(k)]
-    found = review(ws=ws, others=others, instruction=instruction, target=target, texts=texts)
+    found = review(
+        ws=ws, others=others, instruction=instruction, target=target, texts=texts,
+        said_as=said_as, continuing=_continuing(cfg, ws, target), nicknames=nicknames.load(),
+    )
     if tool == "upload_file":
         found.flags.append(f"The filter can't read inside {args['_filename']}. Confirm it's the right file.")
 
@@ -356,7 +411,8 @@ def prepare(cfg: Config, pool: WorkspacePool, tickets: Tickets, tool: str, raw: 
         return {**base, "blocked": True, "reasons": found.blocks, "flags": found.flags}
 
     ticket = tickets.issue(
-        Pending(tool, ws.client_code, live["team_id"], args, target, instruction, found.read_back, time.monotonic())
+        Pending(tool, ws.client_code, live["team_id"], args, target, instruction, found.read_back, time.monotonic(),
+                remember=found.remember)
     )
     confirm_with: dict[str, Any] = {"ticket": ticket, "expect_realm": company}
     if found.read_back:
@@ -400,6 +456,8 @@ def confirm(
         "client_code": ws.client_code,
         "company": live["team"],
         "to": pending.target.label if pending.target else None,
+        "target_id": pending.target.id if pending.target else None,
+        "thread_ts": pending.args.get("thread_ts"),
         "instruction": pending.instruction,
         "owner_reply": owner_reply,
         "preview": content[:200],
@@ -412,4 +470,13 @@ def confirm(
         _audit(cfg, "failed", **record, reason=str(error))
         raise error from exc
     _audit(cfg, "done", **record, result=result)
-    return {"done": True, "realm": live["team"], "client_code": ws.client_code, "to": record["to"], **result}
+    reply = {"done": True, "realm": live["team"], "client_code": ws.client_code, "to": record["to"], **result}
+    if pending.remember:
+        nick, full = pending.remember
+        status = nicknames.remember(nick, full)
+        reply["nickname"] = {
+            "saved": f"From now on, {nick} means {full} in Slack, mail and texts.",
+            "known": f"{nick} already meant {full}.",
+            "conflict": f"{nick} already means someone else, so it wasn't saved. Edit nicknames.yaml to change it.",
+        }[status]
+    return reply

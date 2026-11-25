@@ -1,10 +1,12 @@
 """Read threads and attachments out of the Messages database. SELECT only.
 
-Which threads may be read is decided here, from the allow-list alone:
-  * a direct thread, only when every number or address in it is on the allow-list
-    under one person;
-  * a group thread, only when that group itself is on the allow-list. An allowed
-    person being in a group never opens the group.
+How a thread is found:
+  * a direct thread, only when every number or address in it belongs to one person;
+  * a group thread, by the group's own id in Messages. Someone being in a group never
+    opens the group: what they said there is shown only when asked, and only their words.
+
+Nothing here writes. Sending goes through the Messages app (sending.py); after a send,
+this module only looks up, read-only, whether Messages delivered it.
 """
 
 from __future__ import annotations
@@ -50,6 +52,30 @@ class Chat:
     identifier: str
     display_name: str
     handles: set[str] = field(default_factory=set)  # normalized
+    guid: str = ""  # what the Messages app calls this chat, for sending
+
+    @property
+    def service(self) -> str:
+        return self.guid.split(";", 1)[0] if ";" in self.guid else ""
+
+
+@dataclass
+class Delivery:
+    found: bool
+    error: int = 0
+    delivered: bool = False
+    sent: bool = False
+
+    def plain(self) -> str:
+        if not self.found:
+            return "Messages hasn't recorded it yet. Check the thread in a moment."
+        if self.error:
+            return f"Messages says it failed (error {self.error}). It may not have gone out."
+        if self.delivered:
+            return "Delivered."
+        if self.sent:
+            return "Sent. Not marked delivered yet (normal for a text message, or a phone that's off)."
+        return "Handed to Messages. Not confirmed sent yet."
 
 
 @dataclass
@@ -97,13 +123,17 @@ class Store:
         for row in self.conn.execute("SELECT ROWID, id FROM handle"):
             if row["id"]:
                 self._handles[row["ROWID"]] = normalize_handle(row["id"])
+        chat_columns = self._columns("chat")
+        self._message_columns = self._columns("message")
+        guid = "guid" if "guid" in chat_columns else "''"
         self.chats: dict[int, Chat] = {}
-        for row in self.conn.execute("SELECT ROWID, style, chat_identifier, display_name FROM chat"):
+        for row in self.conn.execute(f"SELECT ROWID, style, chat_identifier, display_name, {guid} AS guid FROM chat"):
             self.chats[row["ROWID"]] = Chat(
                 id=row["ROWID"],
                 style=row["style"] or 0,
                 identifier=row["chat_identifier"] or "",
                 display_name=(row["display_name"] or "").strip(),
+                guid=row["guid"] or "",
             )
         for row in self.conn.execute("SELECT chat_id, handle_id FROM chat_handle_join"):
             chat, handle = self.chats.get(row["chat_id"]), self._handles.get(row["handle_id"])
@@ -112,6 +142,13 @@ class Store:
 
     def close(self) -> None:
         self.conn.close()
+
+    def _columns(self, table: str) -> set[str]:
+        return {row[1] for row in self.conn.execute(f"PRAGMA table_info({table})")}
+
+    def handle_rows(self, handles: set[str]) -> list[int]:
+        """The database's own row ids for these numbers and addresses."""
+        return sorted(rowid for rowid, handle in self._handles.items() if handle in handles)
 
     # ── Which threads ────────────────────────────────────────────────────────
 
@@ -124,6 +161,17 @@ class Store:
             for chat in self.chats.values()
             if chat.style == STYLE_DIRECT and chat.handles and chat.handles <= allowed
         )
+
+    def chat_for_sending(self, handles: set[str]) -> Chat | None:
+        """The direct thread to send to: the most recently used one made only of these handles."""
+        candidates = [c for c in self.chats.values() if c.style == STYLE_DIRECT and c.handles and c.handles <= handles]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda c: (self.last_message(c.id) or _APPLE_EPOCH, c.id))
+
+    def groups_containing(self, handles: set[str]) -> list[int]:
+        """Group threads any of these numbers or addresses is in. Used only to show that person's own words."""
+        return sorted(c.id for c in self.chats.values() if c.style == STYLE_GROUP and c.handles & handles)
 
     def group_chats(self, identifiers: set[str]) -> list[int]:
         """Group threads by their own id, never by who is in them."""
@@ -152,7 +200,7 @@ class Store:
     # ── Messages ─────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _where(chat_ids: list[int], since: datetime | None, inbound_only: bool):
+    def _where(chat_ids: list[int], since: datetime | None, inbound_only: bool, sender_rows: list[int] | None = None):
         # item_type 0 skips "named the group" rows. associated_message_type 0 skips tapbacks.
         clauses = [
             f"cmj.chat_id IN ({_marks(chat_ids)})",
@@ -165,6 +213,10 @@ class Store:
             params.append(to_apple_time(since))
         if inbound_only:
             clauses.append("m.is_from_me = 0")
+        if sender_rows is not None:
+            # Only these people's own words: in a group, nobody else's messages are shown.
+            clauses.append(f"m.is_from_me = 0 AND m.handle_id IN ({_marks(sender_rows) or 'NULL'})")
+            params.extend(sender_rows)
         return " AND ".join(clauses), params
 
     def fetch(
@@ -174,11 +226,14 @@ class Store:
         since: datetime | None = None,
         before_id: int | None = None,
         inbound_only: bool = False,
+        sender_rows: list[int] | None = None,
     ) -> list[Message]:
-        """Newest first."""
+        """Newest first. `sender_rows` keeps only those people's words, for group threads."""
         if not chat_ids:
             return []
-        where, params = self._where(chat_ids, since, inbound_only)
+        if sender_rows is not None and not sender_rows:
+            return []
+        where, params = self._where(chat_ids, since, inbound_only, sender_rows)
         if before_id is not None:
             where += " AND m.date < (SELECT date FROM message WHERE ROWID = ?)"
             params.append(before_id)
@@ -225,6 +280,33 @@ class Store:
     def last_message(self, chat_id: int) -> datetime | None:
         return self.summary([chat_id])[1]
 
+    def delivery(self, chat_ids: list[int], handles: set[str], since: datetime) -> Delivery:
+        """After a send: the newest message from the owner in that thread since `since`. Read-only."""
+        cols = self._message_columns
+        error = "m.error" if "error" in cols else "0"
+        delivered = "m.is_delivered" if "is_delivered" in cols else "0"
+        sent = "m.is_sent" if "is_sent" in cols else "0"
+        rows = self.handle_rows(handles)
+        clauses, params = ["m.is_from_me = 1", "m.date >= ?"], [to_apple_time(since)]
+        where = []
+        if chat_ids:
+            where.append(f"m.ROWID IN (SELECT message_id FROM chat_message_join WHERE chat_id IN ({_marks(chat_ids)}))")
+            params.extend(chat_ids)
+        if rows:
+            where.append(f"m.handle_id IN ({_marks(rows)})")
+            params.extend(rows)
+        if not where:
+            return Delivery(found=False)
+        clauses.append("(" + " OR ".join(where) + ")")
+        row = self.conn.execute(
+            f"SELECT {error} AS error, {delivered} AS delivered, {sent} AS sent FROM message m "
+            f"WHERE {' AND '.join(clauses)} ORDER BY m.date DESC LIMIT 1",
+            params,
+        ).fetchone()
+        if row is None:
+            return Delivery(found=False)
+        return Delivery(found=True, error=row["error"] or 0, delivered=bool(row["delivered"]), sent=bool(row["sent"]))
+
     # ── Attachments ──────────────────────────────────────────────────────────
 
     @staticmethod
@@ -257,18 +339,28 @@ class Store:
                     found[attachment.message_id].append(attachment)
         return found
 
-    def attachment_in(self, attachment_id: int, chat_ids: list[int]) -> tuple[Attachment, int] | None:
-        """The attachment and its thread, but only if it sits in one of these threads."""
+    def attachment_in(
+        self, attachment_id: int, chat_ids: list[int], sender_rows: list[int] | None = None
+    ) -> tuple[Attachment, int] | None:
+        """The attachment and its thread, but only if it sits in one of these threads
+        (and, with sender_rows, only if one of those people sent it)."""
         if not chat_ids:
             return None
+        extra, params = "", [attachment_id, *chat_ids]
+        if sender_rows is not None:
+            if not sender_rows:
+                return None
+            extra = f" AND m.is_from_me = 0 AND m.handle_id IN ({_marks(sender_rows)})"
+            params.extend(sender_rows)
         row = self.conn.execute(
             "SELECT j.message_id, cmj.chat_id, a.ROWID AS id, a.filename, a.mime_type, a.uti, a.transfer_name, "
             "a.is_sticker, a.hide_attachment "
             "FROM attachment a "
             "JOIN message_attachment_join j ON j.attachment_id = a.ROWID "
             "JOIN chat_message_join cmj ON cmj.message_id = j.message_id "
-            f"WHERE a.ROWID = ? AND cmj.chat_id IN ({_marks(chat_ids)}) LIMIT 1",
-            [attachment_id, *chat_ids],
+            "JOIN message m ON m.ROWID = j.message_id "
+            f"WHERE a.ROWID = ? AND cmj.chat_id IN ({_marks(chat_ids)}){extra} LIMIT 1",
+            params,
         ).fetchone()
         if not row:
             return None

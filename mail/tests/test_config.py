@@ -99,7 +99,7 @@ def test_example_settings_parse():
 def test_missing_login_says_how_to_fix_it():
     write_settings(TWO_MAILBOXES)
     acct = load_config().accounts[0]
-    with pytest.raises(config.CredentialError, match="wvh-mail-setup --install robin-mail add robin@example.com"):
+    with pytest.raises(config.CredentialError, match="wvh-mail-setup --install robin-mail password robin@example.com"):
         config.get_password(acct)
     assert config.has_password(acct) is False
 
@@ -111,3 +111,45 @@ def test_logins_are_read_from_the_install_s_own_service(isolated):
     assert config.has_password(acct) is False, "another install's login must never be used"
     isolated.set_password("robin-mail", "robin@example.com", "abcdabcdabcdabcd")
     assert config.get_password(acct) == "abcdabcdabcdabcd"
+
+
+# ─── Sending settings ────────────────────────────────────────────────────────
+
+
+def test_out_of_the_box_this_mac_can_send_and_draft():
+    write_settings(TWO_MAILBOXES)
+    cfg = load_config()
+    assert cfg.sending is True and cfg.drafts is True and cfg.remote_drafts is False
+    assert cfg.keychain_service == "robin-mail"
+    assert cfg.inside_domains == {"example.com", "example.net"}
+
+
+def test_the_sending_side_follows_the_reading_side():
+    write_settings(
+        "accounts:\n"
+        "  - email: a@example.com\n"
+        "  - email: b@example.net\n    imap_host: imap.mail.me.com\n"
+        "  - email: c@example.org\n    imap_host: mail.example.org\n    smtp_host: out.example.org\n    smtp_port: 587\n"
+    )
+    a, b, c = load_config().accounts
+    assert (a.smtp_host, a.smtp_port, a.smtp_starttls, a.save_sent) == ("smtp.gmail.com", 465, False, False)
+    assert (b.smtp_host, b.smtp_port, b.smtp_starttls, b.save_sent) == ("smtp.mail.me.com", 587, True, True)
+    assert (c.smtp_host, c.smtp_port, c.smtp_starttls) == ("out.example.org", 587, True)
+
+
+def test_an_existing_keychain_service_is_used_as_is(isolated):
+    write_settings(TWO_MAILBOXES + "keychain_service: OlderService\n")
+    isolated.set_password("OlderService", "robin@example.com", "pw")
+    assert config.get_password(load_config().accounts[0]) == "pw"
+
+
+def test_an_identity_that_isn_t_set_up_is_named(isolated):
+    write_settings(TWO_MAILBOXES + "default_identity: Nobody\n")
+    with pytest.raises(config.ConfigError, match="identity 'Nobody'"):
+        load_config()
+
+
+def test_a_signature_name_cannot_climb_out_of_its_folder():
+    write_settings(TWO_MAILBOXES + "identities:\n  - name: Robin\n    signature: ../../secret.html\n")
+    with pytest.raises(config.ConfigError, match="isn't a signature file name"):
+        load_config()

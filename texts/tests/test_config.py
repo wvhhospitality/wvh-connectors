@@ -51,7 +51,7 @@ def test_settings_are_read_and_numbers_normalized(allowed):
 
 @pytest.mark.parametrize(
     "text",
-    ["allow: [{handles: ['3125550101']}]", "allow: [{name: Dana}]", "groups: [{name: Harbor}]", "- just a list", "a: [b"],
+    ["allow: [{handles: ['3125550101']}]", "groups: [{name: Harbor}]", "- just a list", "a: [b", "scope: everyone", "opted_out: Sam"],
 )
 def test_broken_settings_are_refused(world, text):
     world.settings.parent.mkdir(parents=True, exist_ok=True)
@@ -82,3 +82,39 @@ def test_decoder_reads_the_hidden_body():
     assert decode_attributed_body(blob_with("The hidden body")) == "The hidden body"
     assert message_text(None, blob_with("x")) == "x"
     assert decode_attributed_body(b"garbage") == ""
+
+
+def test_switches_default_on_and_all(isolated):
+    cfg = config.load_config()
+    assert cfg.sending and cfg.can_send and cfg.scope == "all" and not cfg.clients_only
+
+
+@pytest.mark.parametrize("value, expected", [("off", False), (False, False), ("no", False), ("on", True), (True, True)])
+def test_sending_switch(world, value, expected):
+    world.write_settings({"sending": value})
+    assert config.load_config().sending is expected
+
+
+def test_clients_scope_turns_sending_off(world):
+    world.write_settings({"scope": "clients"})
+    cfg = config.load_config()
+    assert cfg.clients_only and not cfg.can_send
+
+
+def test_name_only_entries_holds_opt_outs_and_owner_numbers(world):
+    world.write_settings({
+        "allow": [{"name": "Dana Northwind", "client": "NB"}],
+        "sweep_hold": ["Dana Northwind"],
+        "opted_out": ["Sam Hollis", "+1 312 555 0199"],
+        "owner_numbers": ["312.555.0100"],
+    })
+    cfg = config.load_config()
+    assert cfg.allow[0].handles == frozenset() and cfg.allow[0].client == "NB"
+    assert cfg.sweep_hold == {"dana northwind"} and cfg.opted_out == {"sam hollis", "3125550199"}
+    assert cfg.owner_handles == {"3125550100"}
+
+
+def test_python_app_is_the_venvs_base_python():
+    import sys
+
+    assert config.python_app() == Path(sys.base_prefix) / "Resources" / "Python.app"

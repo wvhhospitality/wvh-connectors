@@ -1,4 +1,8 @@
-"""The one way this package opens a database: read-only, twice over. And whether it can."""
+"""The one way this package opens a database: read-only, twice over. And whether it can.
+
+Nothing in this package ever writes to Messages or Contacts. Sending goes through the
+Messages app itself (see sending.py), never through its database.
+"""
 
 from __future__ import annotations
 
@@ -6,12 +10,21 @@ import os
 import sqlite3
 from pathlib import Path
 
-FULL_DISK_ACCESS_FIX = (
-    "This Mac hasn't given Claude permission to read Messages and Contacts. To allow it: "
-    "open System Settings, then Privacy & Security, then Full Disk Access. Turn on Claude "
-    "(if it isn't in the list, click +, choose Claude from Applications, and turn it on). "
-    "Then quit Claude completely and open it again."
-)
+def full_disk_access_fix() -> str:
+    """What to switch on, naming the exact program macOS checks on this Mac."""
+    from .config import python_app
+
+    return (
+        "macOS hasn't given this connector permission to read Messages and Contacts. Claude starts the "
+        "connector as its own program, so macOS checks the Python that runs it, not only Claude. To allow it: "
+        "open System Settings, then Privacy & Security, then Full Disk Access. Click +, press Command-Shift-G, "
+        f"paste {python_app()} , press Return, click Open, and turn on Python. Turn on Claude too (click + and "
+        "choose Claude in Applications if it isn't listed). Then quit Claude completely and open it again."
+    )
+
+
+# Kept for anything that imported the old name; the text is worked out when it's used.
+FULL_DISK_ACCESS_FIX = "Full Disk Access is missing. Run the setup command's status to see exactly what to switch on."
 
 
 class NoAccess(Exception):

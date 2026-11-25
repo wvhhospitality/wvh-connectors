@@ -4,23 +4,65 @@
 #
 #   wvh-mail-setup --install robin-mail owner Robin --timezone America/Chicago
 #   wvh-mail-setup --install robin-mail add robin@example.com --label Studio
+#   wvh-mail-setup --install robin-mail identity add Robin --signature ~/Desktop/robin.html --default
 #
 # It lives in this install's own settings folder, never in the app:
 #
 #   ~/Library/Application Support/<install-name>/accounts.yaml
 #
 # Nothing in this file is secret. Each mailbox's app password is in the Mac's
-# Keychain, under the install's name.
+# Keychain, under the install's name (or keychain_service, below).
 
 owner_name: Robin                # Claude uses this when it talks about your mail
 timezone: America/Chicago        # times in messages and drafts; leave out to use this Mac's own
 
 accounts:
-  - email: robin@example.com     # Google Workspace: imap.gmail.com is the default
+  - email: robin@example.com     # Google Workspace: imap.gmail.com and smtp.gmail.com are the defaults
     label: Studio                # a short name you can use instead of the address
   - email: robin.jones@example.net
     label: Personal
-  # A mailbox somewhere other than Google names its server:
+    identity: Robin Personal     # who signs mail from this mailbox unless told otherwise
+  # iCloud: its servers are known, so the reading server is enough
+  # - email: robin.cloud@example.net
+  #   imap_host: imap.mail.me.com
+  # Anywhere else: name the reading server, and the sending one if the guess is wrong
   # - email: robin@example.org
   #   imap_host: imap.example.org
-  #   imap_port: 993
+  #   smtp_host: smtp.example.org
+  #   smtp_port: 587             # 587 means STARTTLS; 465 means a secure connection from the start
+
+# Who is writing, and the signature each one adds. Files live in this folder's signatures/.
+# A .txt file of the same name beside an .html one is the plain-text version.
+identities:
+  - name: Robin
+    signature: robin.html
+    by_domain:
+      example.net: robin-personal.html   # a different signature when sending from that domain
+  - name: Robin Personal
+    signature: robin-personal.html
+  - name: Desk Assistant
+    signature: assistant.html
+    drafts_only: true            # may save drafts, never send
+default_identity: Robin
+
+# This Mac's switches. Both are on out of the box; every send still needs your yes.
+# Turn sending off on a Mac that runs scheduled jobs with nobody there to say yes.
+sending: on
+drafts: on
+
+# Addresses at these domains count as inside; anyone else is read back as "goes outside".
+# Leave out to use the domains of your own mailboxes.
+# internal_domains: [example.com, example.net]
+
+# Only if your app passwords are already in the Keychain under another name:
+# keychain_service: OlderMail
+
+# Limits that stop a runaway loop. These are the defaults.
+# send_limits:
+#   max_per_window: 10
+#   window_seconds: 300
+#   max_recipients: 20
+
+# Only for an always-on Mac that runs wvh-mail-remote:
+# remote_port: 27129
+# remote_drafts: off             # on lets the remote save drafts (never send, never attach files)

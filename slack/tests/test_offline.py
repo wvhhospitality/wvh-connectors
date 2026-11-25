@@ -1,6 +1,7 @@
 """Offline tests: settings, the registry, and workspace resolution. No network, no Keychain."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -200,9 +201,56 @@ def test_workspace_label():
     assert Workspace(client_code="X", name="Xylo").label == "Xylo"
 
 
-def test_no_write_tool_is_offered_by_default():
+def test_posting_is_on_out_of_the_box(monkeypatch):
+    from wvh_slack_mcp import server
+
+    monkeypatch.delenv("WVH_SLACK_ALLOW_WRITES", raising=False)
+    monkeypatch.setattr(server, "settings", lambda: {})
+    assert server._writes_switch() is True
+
+
+@pytest.mark.parametrize("env, conf", [("0", {}), ("off", {}), ("", {"sending": "off"}), ("", {"sending": False})])
+def test_posting_can_be_switched_off(monkeypatch, env, conf):
+    from wvh_slack_mcp import server
+
+    monkeypatch.setenv("WVH_SLACK_ALLOW_WRITES", env)
+    monkeypatch.setattr(server, "settings", lambda: conf)
+    assert server._writes_switch() is False
+
+
+def test_an_unreadable_settings_file_never_turns_posting_on(monkeypatch):
+    from wvh_slack_mcp import server
+
+    monkeypatch.delenv("WVH_SLACK_ALLOW_WRITES", raising=False)
+    def broken():
+        raise ValueError("bad yaml")
+    monkeypatch.setattr(server, "settings", broken)
+    assert server._writes_switch() is False
+
+
+def test_a_brand_new_install_offers_no_posting_tools(monkeypatch, tmp_path):
     from wvh_slack_mcp import server, writes
 
-    names = {t.name for t in server.TOOLS}
-    assert "read_file" in names and "find_person" in names
+    monkeypatch.setattr(server, "WRITES_ENABLED", True)
+    empty = load_config(_write(tmp_path, ""))
+    monkeypatch.setattr(server, "state", SimpleNamespace(config=empty))
+    names = {t.name for t in server.offered_tools()}
+    assert "find_person" in names and not names & set(writes.SPECS) and "confirm_write" not in names
+
+
+def test_posting_tools_appear_once_a_workspace_is_connected(monkeypatch, tmp_path):
+    from wvh_slack_mcp import server, writes
+
+    monkeypatch.setattr(server, "WRITES_ENABLED", True)
+    cfg = load_config(_write(tmp_path, "workspaces:\n  - client_code: NB\n    team_id: T_NB\n    name: Northwind Builders\n"))
+    monkeypatch.setattr(server, "state", SimpleNamespace(config=cfg))
+    names = {t.name for t in server.offered_tools()}
+    assert set(writes.SPECS) <= names and "confirm_write" in names
+
+
+def test_switched_off_means_no_posting_tools_even_when_connected(monkeypatch, tmp_path):
+    from wvh_slack_mcp import server, writes
+
+    monkeypatch.setattr(server, "WRITES_ENABLED", False)
+    names = {t.name for t in server.offered_tools()}
     assert not names & set(writes.SPECS) and "confirm_write" not in names

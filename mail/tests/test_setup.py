@@ -176,3 +176,90 @@ def test_a_bad_install_name_is_refused(capsys):
 
 def test_the_window_script_escapes_the_address():
     assert setup_cli._applescript_text('a"b\\c') == '"a\\"b\\\\c"'
+
+
+# ─── Identities, switches, and the older format ──────────────────────────────
+
+from wvh_mail_mcp import config as _config  # noqa: E402
+
+
+def test_identity_add_copies_the_signature_in(home, tmp_path):
+    write_settings("owner_name: Robin\naccounts:\n  - email: robin@example.com\n    label: Studio\n")
+    src = tmp_path / "robin sig.html"
+    src.write_text("<p>Robin Vale</p>")
+    src.with_suffix(".txt").write_text("Robin Vale")
+    assert setup_cli.main(["--install", "robin-mail", "identity", "add", "Robin", "--signature", str(src), "--default"]) == 0
+    assert setup_cli.main(["--install", "robin-mail", "identity", "add", "Helper", "--drafts-only", "--account", "Studio"]) == 0
+    cfg = _config.load_config()
+    assert cfg.default_identity == "Robin" and cfg.identity("Helper").drafts_only
+    assert cfg.accounts[0].identity == "Helper"
+    assert (settings_folder() / "signatures" / "robin sig.html").read_text() == "<p>Robin Vale</p>"
+    assert (settings_folder() / "signatures" / "robin sig.txt").exists()
+
+
+def test_identity_per_domain_signature(home, tmp_path):
+    write_settings("accounts:\n  - email: robin@example.com\n  - email: robin@example.net\n")
+    a, b = tmp_path / "a.html", tmp_path / "b.html"
+    a.write_text("A")
+    b.write_text("B")
+    setup_cli.main(["--install", "robin-mail", "identity", "add", "Robin", "--signature", str(a), "--domain", f"example.net={b}"])
+    cfg = _config.load_config()
+    ident = cfg.identity("Robin")
+    assert ident.signature_for(cfg.accounts[0]) == "a.html" and ident.signature_for(cfg.accounts[1]) == "b.html"
+
+
+@pytest.mark.parametrize("which", ["sending", "drafts"])
+def test_switches_go_off_and_on(home, which):
+    write_settings("accounts:\n  - email: robin@example.com\n")
+    setup_cli.main(["--install", "robin-mail", which, "off"])
+    assert getattr(_config.load_config(), which) is False
+    setup_cli.main(["--install", "robin-mail", which, "on"])
+    assert getattr(_config.load_config(), which) is True
+
+
+OLDER = """\
+imap: {host: imap.gmail.com, port: 993, ssl: true}
+defaults:
+  auth_mode: app_password
+  send: {max_per_window: 5}
+accounts:
+  - client_code: NB
+    email: Ops@Example.com
+    secret_ref: OldMail/ops@example.com
+    signature: robin-nb.html
+  - client_code: KL
+    email: hello@example.net
+    secret_ref: OldMail/hello@example.net
+"""
+
+
+def test_import_brings_in_mailboxes_without_moving_a_password(home, tmp_path, isolated):
+    old = tmp_path / "accounts.yaml"
+    old.write_text(OLDER)
+    sigs = tmp_path / "signatures"
+    sigs.mkdir()
+    (sigs / "robin-nb.html").write_text("<p>Robin</p>")
+    isolated.set_password("OldMail", "ops@example.com", "already-there")
+    assert setup_cli.main(["--install", "robin-mail", "import", str(old), "--signatures", str(sigs)]) == 0
+    cfg = _config.load_config()
+    assert cfg.keychain_service == "OldMail"
+    assert [(a.email, a.label, a.signature) for a in cfg.accounts] == [
+        ("ops@example.com", "NB", "robin-nb.html"), ("hello@example.net", "KL", None)]
+    assert cfg.send_limits.max_per_window == 5
+    assert _config.get_password(cfg.accounts[0]) == "already-there"
+    assert (settings_folder() / "signatures" / "robin-nb.html").exists()
+    assert isolated.items == {("OldMail", "ops@example.com"): "already-there"}, "no password was copied or moved"
+
+
+def test_import_never_overwrites_mailboxes_already_set_up(home, tmp_path):
+    write_settings("accounts:\n  - email: robin@example.com\n")
+    old = tmp_path / "accounts.yaml"
+    old.write_text(OLDER)
+    assert setup_cli.main(["--install", "robin-mail", "import", str(old)]) == 1
+    assert [a.email for a in _config.load_config().accounts] == ["robin@example.com"]
+
+
+def test_the_older_format_is_named_plainly_if_used_directly(home):
+    write_settings(OLDER)
+    with pytest.raises(_config.ConfigError, match="older WvH Mail format. Convert it once"):
+        _config.load_config()

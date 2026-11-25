@@ -2,8 +2,10 @@
 
 Reads are open. Writes happen only on the owner's specific command: every write tool
 previews, and `confirm_write` is the single path that acts, through the discretion
-filter in discretion.py. Write tools exist only where WVH_SLACK_ALLOW_WRITES=1 is
-set: the Mac the owner sits at, never an unattended one.
+filter in discretion.py. Posting is on out of the box on the Mac the owner sits at,
+and its tools appear once a workspace is connected. `sending: off` in the settings file,
+or WVH_SLACK_ALLOW_WRITES=0, turns it off for a Mac that runs unattended jobs; the
+read-only remote server (remote.py) never has write tools at all.
 """
 
 from __future__ import annotations
@@ -21,7 +23,8 @@ from mcp.server.stdio import stdio_server
 from mcp.types import ImageContent, TextContent, Tool
 
 from . import writes
-from .config import Config, ConfigError, CredentialError, Workspace, load_config, owner_cap, owner_name
+from . import nicknames
+from .config import Config, ConfigError, CredentialError, Workspace, load_config, owner_cap, owner_name, settings
 from .detect import detect_workspaces
 from .discretion import Tickets, TicketError
 from .oauth import ConnectError, connect, resolve_target
@@ -32,7 +35,18 @@ logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s:
 log = logging.getLogger("wvh_slack_mcp")
 
 SERVER_NAME = "wvh-slack-mcp"
-WRITES_ENABLED = os.environ.get("WVH_SLACK_ALLOW_WRITES") == "1"
+def _writes_switch() -> bool:
+    """On unless this Mac turns it off. A Mac running scheduled jobs sets `sending: off`."""
+    if os.environ.get("WVH_SLACK_ALLOW_WRITES", "").strip() in ("0", "false", "off", "no"):
+        return False
+    try:
+        value = settings().get("sending", True)
+    except Exception:  # an unreadable settings file never switches posting on by surprise
+        return False
+    return str(value).strip().lower() not in ("false", "off", "no", "0")
+
+
+WRITES_ENABLED = _writes_switch()
 WRITE_TOOLS = frozenset(writes.SPECS)
 
 # Who this install works for. Read once at start, so every description names them.
@@ -56,6 +70,12 @@ realm. If several, ask {OWNER} which. Then call the write tool, which only previ
 the realm, recipient, and words. If the preview says read_back_required, wait for a
 yes from {OWNER}. Then call confirm_write with confirm_with copied exactly. If anything
 was interrupted, preview again. If you can't tell which realm, ask: never guess.
+
+Nicknames: if {OWNER} calls someone by a name Slack doesn't use ("Danny" for Dana Northwind),
+work out who from what you know, put the real person in `to`, and pass {OWNER}'s word as
+`said_as`. The preview reads it back; {OWNER}'s yes teaches it for good, in Slack, mail
+and texts. Follow-ups: in a conversation already going ("tell him yes"), preview to the
+same place; the connector recognizes the conversation and asks for a read-back.
 """
 
 # Slack calls are blocking; run them off the event loop.
@@ -229,6 +249,13 @@ READ_TOOLS: list[Tool] = [
     ),
 ]
 
+_SAID_AS = {
+    "type": "string",
+    "description": (
+        f"The name {OWNER} used for the recipient when it isn't their name in Slack (a nickname such as "
+        f"'Danny'). It must appear in the instruction. A new one is read back, and {OWNER}'s yes remembers it."
+    ),
+}
 _PREVIEW = (
     f" PREVIEW ONLY: this never changes Slack. Only on {OWNER}'s specific command. Returns the realm, "
     "who it reaches, any flags, and `confirm_with` for confirm_write."
@@ -237,7 +264,7 @@ WRITE_TOOL_DEFS: list[Tool] = [
     _tool(
         name,
         spec.description + _PREVIEW,
-        {"workspace": _WS, "instruction": _INSTRUCTION, **spec.properties},
+        {"workspace": _WS, "instruction": _INSTRUCTION, "said_as": _SAID_AS, **spec.properties},
         ("workspace", "instruction", *spec.required),
     )
     for name, spec in writes.SPECS.items()
@@ -328,9 +355,13 @@ def _connect(cfg: Config, ref: str) -> dict[str, Any]:
 def _find_person(cfg: Config, pool: WorkspacePool, name: str) -> dict[str, Any]:
     matches: list[dict] = []
     missed: list[str] = []
+    real = nicknames.lookup(name)  # "Danny" -> "Dana Northwind", if the owner taught it
+    queries = [name] if not real else [real, name]
     for ws in cfg.enabled:
         try:
-            for person in pool.find_people(ws, name):
+            seen: set[str] = set()
+            found = [p for q in queries for p in pool.find_people(ws, q) if not (p["id"] in seen or seen.add(p["id"]))]
+            for person in found:
                 matches.append(
                     {
                         "client_code": ws.client_code,
@@ -345,6 +376,8 @@ def _find_person(cfg: Config, pool: WorkspacePool, name: str) -> dict[str, Any]:
             missed.append(ws.client_code)
     realms = sorted({m["realm"] for m in matches})
     out: dict[str, Any] = {"matches": matches, "realms": realms}
+    if real:
+        out["known_as"] = f"{owner_cap()} calls {real} '{name}'. Pass '{name}' as said_as when writing."
     if len(realms) > 1:
         out["ask_owner"] = f"{name} appears in {', '.join(realms)}. Ask {owner_name()} which one is meant."
     if missed:
@@ -441,6 +474,12 @@ def _dispatch(name: str, args: dict[str, Any]) -> Any:
     ws = cfg.find(args["workspace"])
     pool.verify_realm(ws)  # the login must answer for this workspace, or nothing comes back
     result = _read_tool(pool, ws, name, args, save_files=not remote)
+    if name in ("read_channel", "read_thread") and not remote:
+        try:
+            channel_id = pool.resolve_target(ws, args["channel"]).id
+        except Exception:
+            channel_id = ""
+        writes.note_read(ws.client_code, args["channel"], channel_id)
     stamp = {"client_code": ws.client_code, "company_name": ws.label}
     if isinstance(result, FileReply):
         result.meta["realm"] = stamp
@@ -460,13 +499,25 @@ def _render(result: Any) -> list[TextContent | ImageContent]:
     return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
 
 
+def offered_tools() -> list[Tool]:
+    """Posting tools appear once posting is on AND a workspace is connected.
+    A brand-new install has nothing to post to, so it offers nothing to post with."""
+    if not WRITES_ENABLED:
+        return READ_TOOLS
+    try:
+        ready = bool(state.config.enabled)
+    except Exception:
+        ready = False
+    return TOOLS if ready else READ_TOOLS
+
+
 def create_server(tools: list[Tool] | None = None, instructions: str = INSTRUCTIONS) -> Server:
     server = Server(SERVER_NAME, instructions=instructions)
     listed = TOOLS if tools is None else tools
 
     @server.list_tools()
     async def _list_tools() -> list[Tool]:
-        return listed
+        return offered_tools() if tools is None else listed
 
     @server.call_tool()
     async def _call_tool(name: str, arguments: dict[str, Any] | None) -> list[TextContent | ImageContent]:

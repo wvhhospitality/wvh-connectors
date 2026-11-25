@@ -11,6 +11,7 @@ that git would publish.
 
 Where it looks for your private words:
   * each connector's settings folder (~/Library/Application Support/wvh-slack, -mail, -texts)
+  * the nicknames every connector shares (~/Library/Application Support/wvh-connectors/nicknames.yaml)
   * an optional list of your own: ~/Library/Application Support/wvh-connectors/privacy.yaml
         settings_folders: [~/some/older/config/folder]   # more places to read
         extra_words: [A Client Name, a-person@example.com]
@@ -34,6 +35,8 @@ REPO = Path(__file__).resolve().parents[1]
 SUPPORT = Path.home() / "Library" / "Application Support"
 OWN_LIST = SUPPORT / "wvh-connectors" / "privacy.yaml"
 SETTINGS_FOLDERS = [SUPPORT / name for name in ("wvh-slack", "wvh-mail", "wvh-texts")]
+# The nicknames every connector shares: real people's names, so private words too.
+SETTINGS_FILES = [SUPPORT / "wvh-connectors" / "nicknames.yaml"]
 
 # Addresses and numbers that exist only as examples.
 SAFE_EMAIL_DOMAINS = {"example.com", "example.org", "example.net", "users.noreply.github.com", "anthropic.com"}
@@ -90,6 +93,17 @@ def _load(path: Path) -> list[str]:
         return found + EMAIL.findall(text) + SLACK_ID.findall(text)
 
 
+def _nickname_keys(path: Path) -> list[str]:
+    """Nicknames are the keys of the file, and private like the names they stand for."""
+    try:
+        import yaml
+
+        table = (yaml.safe_load(path.read_text()) or {}).get("nicknames") or {}
+        return [str(k) for k in table] if isinstance(table, dict) else []
+    except Exception:
+        return []
+
+
 def _own_list() -> dict:
     if not OWN_LIST.exists():
         return {}
@@ -117,6 +131,11 @@ def private_words() -> tuple[dict[str, set[str]], set[str]]:
     words: dict[str, set[str]] = {"email": set(), "domain": set(), "phone": set(), "id": set(), "name": set(), "code": set()}
 
     raw: list[str] = [str(w) for w in own.get("extra_words") or []]
+    for extra in SETTINGS_FILES:
+        if extra.is_file():
+            data = _load(extra)
+            raw += data
+            raw += [k for k in _nickname_keys(extra)]
     for folder in folders:
         if not folder.is_dir():
             continue

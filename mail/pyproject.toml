@@ -1,7 +1,7 @@
 [project]
 name = "wvh-mail-mcp"
-version = "0.1.0"
-description = "One Claude connector for every mailbox you have. Reads, searches and reads attachments; saves drafts for you to send. It cannot send."
+version = "0.2.0"
+description = "One Claude connector for every mailbox you have. Reads, searches, reads and saves attachments, drafts, and sends, replies and replies-all with files and signatures. Every send is shown to you first and goes out only after your yes."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -31,6 +31,7 @@ dev = [
 [project.scripts]
 wvh-mail-mcp = "wvh_mail_mcp.server:main"
 wvh-mail-setup = "wvh_mail_mcp.setup_cli:main"
+wvh-mail-remote = "wvh_mail_mcp.remote:main"
 
 [build-system]
 requires = ["setuptools>=68"]

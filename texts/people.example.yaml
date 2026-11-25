@@ -3,7 +3,7 @@
 # You don't need to write this file by hand. `wvh-texts-setup` writes it for you,
 # and makes a dated copy before every change:
 #
-#   wvh-texts-setup --install robin-texts owner Robin --timezone America/Chicago
+#   wvh-texts-setup --install robin-texts owner Robin --timezone America/Chicago --number "+1 312 555 0100"
 #   wvh-texts-setup --install robin-texts allow "Dana Northwind"
 #   wvh-texts-setup --install robin-texts allow-group "Harbor crew"
 #
@@ -11,14 +11,21 @@
 #
 #   ~/Library/Application Support/<install-name>/people.yaml
 #
-# Only threads on this list can be read. An empty list reads nothing.
+# Claude reads the person or group chat you name, when you ask. This list decides who
+# the automatic sweeps reach: "what's new," and searches that don't name anyone.
 
 owner_name: Robin                 # Claude uses this when it talks about your texts
 timezone: America/Chicago         # times in answers; leave out to use this Mac's own
+owner_numbers: ["3125550100"]     # your own number, so "text me" works
 
-allow:                            # people: only their direct threads with these numbers and addresses
+sending: on                       # off removes the send tools from this Mac
+scope: all                        # clients: every tool reaches this list only, and nothing sends
+
+allow:                            # people the sweeps reach
   - name: Dana Northwind          # the name saved in Contacts
-    handles: ["3125550101", "dana@example.com"]
+    handles: ["3125550101", "dana@example.com"]   # only these of theirs are swept
+    client: Northwind Builders    # optional: a label shown next to them
+  - name: Nico Reyes              # no handles: every number on their Contacts card
   - name: Front desk              # a number that isn't in Contacts
     handles: ["3125550199"]
 
@@ -26,5 +33,8 @@ groups:                           # group chats, each added on its own
   - name: Harbor crew             # what you call it
     chat: chat600000000000000001  # the group's own id in Messages, from `groups`
 
-nicknames:                        # ways you say a name; a nickname never adds anyone
-  Dee: Dana Northwind
+sweep_hold: [Nico Reyes]          # readable when you name them, left out of sweeps
+opted_out: []                     # out of every tool, sending included
+
+nicknames:                        # this install's own; most live in the shared list:
+  Dee: Dana Northwind             #   ~/Library/Application Support/wvh-connectors/nicknames.yaml

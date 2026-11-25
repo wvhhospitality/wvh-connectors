@@ -1,7 +1,7 @@
 [project]
 name = "wvh-texts-mcp"
-version = "0.1.0"
-description = "Read the text messages on your Mac, only from the people and group chats you allow. It cannot send."
+version = "0.2.0"
+description = "Your text messages in Claude: read who you name, sweep only your list, and send only after you see it and say yes."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -9,6 +9,7 @@ authors = [{ name = "WvH Hospitality LLC" }]
 dependencies = [
     "mcp>=1.2.0,<2",  # 2.0 removed the low-level decorator API this server is written against
     "pyyaml>=6.0.1",
+    "uvicorn>=0.30",  # the read-only door (remote.py); mcp already brings starlette
 ]
 
 [project.optional-dependencies]
@@ -19,6 +20,7 @@ dev = [
 [project.scripts]
 wvh-texts-mcp = "wvh_texts_mcp.server:main"
 wvh-texts-setup = "wvh_texts_mcp.setup_cli:main"
+wvh-texts-remote = "wvh_texts_mcp.remote:main"
 
 [build-system]
 requires = ["setuptools>=68"]

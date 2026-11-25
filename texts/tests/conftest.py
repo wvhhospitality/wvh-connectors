@@ -31,12 +31,13 @@ CREATE TABLE ZABCDEMAILADDRESS (Z_PK INTEGER PRIMARY KEY, ZOWNER INTEGER, ZADDRE
 
 MESSAGE_TABLES = """
 CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
-CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, style INTEGER, chat_identifier TEXT, display_name TEXT);
+CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, style INTEGER, chat_identifier TEXT, display_name TEXT, guid TEXT);
 CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
 CREATE TABLE message (ROWID INTEGER PRIMARY KEY, text TEXT, attributedBody BLOB, handle_id INTEGER, date INTEGER,
                       is_from_me INTEGER DEFAULT 0, item_type INTEGER DEFAULT 0, associated_message_type INTEGER,
                       cache_has_attachments INTEGER DEFAULT 0, date_retracted INTEGER DEFAULT 0,
-                      date_edited INTEGER DEFAULT 0);
+                      date_edited INTEGER DEFAULT 0, error INTEGER DEFAULT 0, is_delivered INTEGER DEFAULT 0,
+                      is_sent INTEGER DEFAULT 0);
 CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
 CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY, filename TEXT, mime_type TEXT, uti TEXT, transfer_name TEXT,
                          is_sticker INTEGER DEFAULT 0, hide_attachment INTEGER DEFAULT 0);
@@ -156,17 +157,17 @@ def _write_messages(world: World) -> None:
         ],
     )
     db.executemany(
-        "INSERT INTO chat VALUES (?, ?, ?, ?)",
+        "INSERT INTO chat VALUES (?, ?, ?, ?, ?)",
         [
-            (DANA_IM, DIRECT, "+13125550101", None),
-            (DANA_SMS, DIRECT, "+13125550101", None),
-            (DANA_MAIL, DIRECT, "dana@example.com", None),
-            (NICO_R, DIRECT, "+13125550102", None),
-            (SAM, DIRECT, "+13125550104", None),
-            (HARBOR, GROUP, "chat600000000000000001", "Harbor crew"),
-            (FAMILY, GROUP, "chat700000000000000002", "Family"),
-            (STRANGER, DIRECT, "+13125550199", None),
-            (NICO_A, DIRECT, "+13125550103", None),
+            (DANA_IM, DIRECT, "+13125550101", None, "iMessage;-;+13125550101"),
+            (DANA_SMS, DIRECT, "+13125550101", None, "SMS;-;+13125550101"),
+            (DANA_MAIL, DIRECT, "dana@example.com", None, "iMessage;-;dana@example.com"),
+            (NICO_R, DIRECT, "+13125550102", None, "iMessage;-;+13125550102"),
+            (SAM, DIRECT, "+13125550104", None, "iMessage;-;+13125550104"),
+            (HARBOR, GROUP, "chat600000000000000001", "Harbor crew", "iMessage;+;chat600000000000000001"),
+            (FAMILY, GROUP, "chat700000000000000002", "Family", "iMessage;+;chat700000000000000002"),
+            (STRANGER, DIRECT, "+13125550199", None, "SMS;-;+13125550199"),
+            (NICO_A, DIRECT, "+13125550103", None, "iMessage;-;+13125550103"),
         ],
     )
     db.executemany(
@@ -203,13 +204,25 @@ ALLOWED = {
 
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
-    """A fresh, empty home folder and no real database for every test."""
+    """A fresh, empty home folder, no real database, and nothing that can really send."""
+    from wvh_texts_mcp import sending
+
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("WVH_TEXTS_INSTALL", "robin-texts")
-    for name in ("WVH_TEXTS_HOME", "WVH_TEXTS_OWNER"):
+    monkeypatch.setenv("WVH_NICKNAMES", str(tmp_path / "shared" / "nicknames.yaml"))
+    for name in ("WVH_TEXTS_HOME", "WVH_TEXTS_OWNER", "WVH_TEXTS_SENDING", "WVH_TEXTS_SCOPE", "WVH_TEXTS_ON"):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(sending, "DELIVERY_WAIT", 0)
+    monkeypatch.setattr(sending, "OSASCRIPT", "/nonexistent/osascript-never-runs-in-tests")
+
+    def refuse(*args, **kwargs):  # a test that forgets the fake can never reach Messages
+        raise AssertionError("A test tried to run a real script.")
+
+    monkeypatch.setattr(sending, "_spawn", refuse)
+    sending.TICKETS.clear()
+    sending.forget_reads()
     monkeypatch.setenv("WVH_TEXTS_CHAT_DB", str(tmp_path / "none" / "chat.db"))
     monkeypatch.setenv("WVH_TEXTS_CONTACTS", str(tmp_path / "none" / "AddressBook"))
     monkeypatch.setenv("WVH_TEXTS_ATTACHMENTS", str(tmp_path / "none" / "Attachments"))
@@ -238,3 +251,41 @@ def world(tmp_path, monkeypatch, isolated) -> World:
 def allowed(world) -> World:
     world.write_settings(ALLOWED)
     return world
+
+
+@dataclass
+class Sent:
+    scripts: list[str] = field(default_factory=list)
+    argv: list[list[str]] = field(default_factory=list)
+
+
+@pytest.fixture
+def messages_app(world, monkeypatch):
+    """A stand-in for the Messages app: records the AppleScript it's handed on standard input,
+    and records the send in the made-up database the way Messages would."""
+    import subprocess
+
+    from wvh_texts_mcp import sending
+
+    sent = Sent()
+    state = {"delivered": 1, "error": 0, "fail": None}
+
+    def fake_run(argv, input=None, capture_output=False, text=False, timeout=None):
+        sent.argv.append(list(argv))
+        sent.scripts.append(input or "")
+        if state["fail"]:
+            return subprocess.CompletedProcess(argv, 1, "", state["fail"])
+        import re as _re
+
+        guid = _re.search(r'chat id "([^"]+)"', input or "")
+        chat = None
+        if guid:
+            row = world.writer.execute("SELECT ROWID FROM chat WHERE guid = ?", (guid.group(1),)).fetchone()
+            chat = row[0] if row else None
+        if chat:
+            world.add(chat, "sent", hours=0, from_me=1, is_delivered=state["delivered"], error=state["error"], is_sent=1)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(sending, "_spawn", fake_run)
+    sent.state = state
+    return sent
