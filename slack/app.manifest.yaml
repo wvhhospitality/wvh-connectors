@@ -1,0 +1,41 @@
+# The Slack app each install creates for its own owner. `wvh-slack-connect setup`
+# fills in the three {placeholders} and hands this to Slack. Nothing here is secret.
+display_information:
+  name: "{app_name}"
+  description: "{app_description}"
+  background_color: "#2d4a3e"
+oauth_config:
+  redirect_urls:
+    - "{redirect_uri}"
+  scopes:
+    user:
+      - channels:read
+      - channels:history
+      - channels:write
+      - groups:read
+      - groups:history
+      - groups:write
+      - im:read
+      - im:history
+      - im:write
+      - mpim:read
+      - mpim:history
+      - mpim:write
+      - users:read
+      - users:read.email
+      - search:read
+      - chat:write
+      - files:read
+      - files:write
+      - reactions:read
+      - reactions:write
+      - emoji:read
+      - canvases:read
+      - canvases:write
+      - lists:read
+      - lists:write
+  pkce_enabled: true
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

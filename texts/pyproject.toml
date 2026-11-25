@@ -1,0 +1,32 @@
+[project]
+name = "wvh-texts-mcp"
+version = "0.1.0"
+description = "Read the text messages on your Mac, only from the people and group chats you allow. It cannot send."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "WvH Hospitality LLC" }]
+dependencies = [
+    "mcp>=1.2.0,<2",  # 2.0 removed the low-level decorator API this server is written against
+    "pyyaml>=6.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+wvh-texts-mcp = "wvh_texts_mcp.server:main"
+wvh-texts-setup = "wvh_texts_mcp.setup_cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -1,0 +1,26 @@
+# WvH Mail: example settings. Every name and address here is made up.
+#
+# You don't need to write this file by hand. `wvh-mail-setup` writes it for you:
+#
+#   wvh-mail-setup --install robin-mail owner Robin --timezone America/Chicago
+#   wvh-mail-setup --install robin-mail add robin@example.com --label Studio
+#
+# It lives in this install's own settings folder, never in the app:
+#
+#   ~/Library/Application Support/<install-name>/accounts.yaml
+#
+# Nothing in this file is secret. Each mailbox's app password is in the Mac's
+# Keychain, under the install's name.
+
+owner_name: Robin                # Claude uses this when it talks about your mail
+timezone: America/Chicago        # times in messages and drafts; leave out to use this Mac's own
+
+accounts:
+  - email: robin@example.com     # Google Workspace: imap.gmail.com is the default
+    label: Studio                # a short name you can use instead of the address
+  - email: robin.jones@example.net
+    label: Personal
+  # A mailbox somewhere other than Google names its server:
+  # - email: robin@example.org
+  #   imap_host: imap.example.org
+  #   imap_port: 993

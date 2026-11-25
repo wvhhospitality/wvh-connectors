@@ -1,0 +1,44 @@
+[project]
+name = "wvh-mail-mcp"
+version = "0.1.0"
+description = "One Claude connector for every mailbox you have. Reads, searches and reads attachments; saves drafts for you to send. It cannot send."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "WvH Hospitality LLC" }]
+dependencies = [
+    "mcp>=1.2.0,<2",  # 2.0 removed the low-level decorator API this server is written against
+    "imapclient>=3.0.1",
+    "keyring>=25.0.0",
+    "pyyaml>=6.0.1",
+    "certifi>=2024.0.0",  # macOS Python has no CA bundle: required for TLS to the mail server
+    "html2text>=2024.2.26",
+    # Reading attachments for Claude: PDFs, images, spreadsheets and Word files.
+    "pypdf>=5.0",
+    "fonttools>=4.50",  # pypdf needs it for some embedded PDF fonts
+    "pymupdf>=1.24",    # scanned PDF pages, and a backup PDF reader
+    "pillow>=11.0",
+    "pillow-heif>=0.20",
+    "openpyxl>=3.1",
+    "python-docx>=1.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+wvh-mail-mcp = "wvh_mail_mcp.server:main"
+wvh-mail-setup = "wvh_mail_mcp.setup_cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

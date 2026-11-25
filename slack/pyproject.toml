@@ -1,0 +1,36 @@
+[project]
+name = "wvh-slack-mcp"
+version = "0.3.2"
+description = "One Claude connector for every Slack workspace you belong to. Your own Slack app, one click per workspace, no tokens to paste."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "WvH Hospitality LLC" }]
+dependencies = [
+    "mcp>=1.2.0,<2",  # 2.0 removed the low-level decorator API this server is written against
+    "slack-sdk>=3.31.0",
+    "pyyaml>=6.0.1",
+    "pydantic>=2.8.0",
+    "certifi>=2024.0.0",  # macOS Python has no CA bundle — required for TLS to Slack
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+wvh-slack-mcp = "wvh_slack_mcp.server:main"
+wvh-slack-connect = "wvh_slack_mcp.connect_cli:main"
+wvh-slack-remote = "wvh_slack_mcp.remote:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

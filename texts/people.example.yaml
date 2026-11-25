@@ -1,0 +1,30 @@
+# WvH Texts: example settings. Every name, number and address here is made up.
+#
+# You don't need to write this file by hand. `wvh-texts-setup` writes it for you,
+# and makes a dated copy before every change:
+#
+#   wvh-texts-setup --install robin-texts owner Robin --timezone America/Chicago
+#   wvh-texts-setup --install robin-texts allow "Dana Northwind"
+#   wvh-texts-setup --install robin-texts allow-group "Harbor crew"
+#
+# It lives in this install's own settings folder, never in the app:
+#
+#   ~/Library/Application Support/<install-name>/people.yaml
+#
+# Only threads on this list can be read. An empty list reads nothing.
+
+owner_name: Robin                 # Claude uses this when it talks about your texts
+timezone: America/Chicago         # times in answers; leave out to use this Mac's own
+
+allow:                            # people: only their direct threads with these numbers and addresses
+  - name: Dana Northwind          # the name saved in Contacts
+    handles: ["3125550101", "dana@example.com"]
+  - name: Front desk              # a number that isn't in Contacts
+    handles: ["3125550199"]
+
+groups:                           # group chats, each added on its own
+  - name: Harbor crew             # what you call it
+    chat: chat600000000000000001  # the group's own id in Messages, from `groups`
+
+nicknames:                        # ways you say a name; a nickname never adds anyone
+  Dee: Dana Northwind

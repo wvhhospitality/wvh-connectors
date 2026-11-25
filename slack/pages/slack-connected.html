@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finishing your Slack connection</title>
+<style>body{font:17px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:20vh auto;max-width:30rem;padding:0 1rem;color:#222}h1{font-size:1.4rem}</style>
+</head>
+<body>
+<h1>Finishing your Slack connection</h1>
+<p id="note">One moment.</p>
+<script>
+// Hands Slack's one-time code to the Connect tool on this computer. The code is
+// useless anywhere else, and nothing here is stored or sent to any other site.
+(function () {
+  var query = window.location.search;
+  var note = document.getElementById('note');
+  if (!query) { note.textContent = 'Nothing to finish here. You can close this tab.'; return; }
+  var target = 'http://127.0.0.1:53682/callback' + query;
+  note.textContent = 'If nothing happens, ';
+  var link = document.createElement('a');
+  link.href = target;
+  link.textContent = 'click here to finish';
+  note.appendChild(link);
+  note.appendChild(document.createTextNode('.'));
+  window.location.replace(target);
+})();
+</script>
+</body>
+</html>

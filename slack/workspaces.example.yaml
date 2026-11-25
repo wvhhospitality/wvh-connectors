@@ -1,0 +1,28 @@
+# WvH Slack: example settings. Every name here is made up.
+#
+# You may never need this file. Connecting a workspace records it on its own.
+# Copy it to your settings folder only to set your name, hold a workspace, or
+# give one a nickname:
+#
+#   ~/Library/Application Support/wvh-slack/workspaces.yaml
+#
+# Nothing in this file is secret. Logins live in the Mac's Keychain.
+
+owner_name: Robin              # Claude uses this when it talks about your Slack
+# timezone: America/Chicago    # times in messages; leave out to use this Mac's own
+# app_name: Robin Assistant    # the name of your Slack app, if you want a different one
+
+workspaces:
+  - client_code: JNV            # a short code you choose; Claude accepts it or the name
+    name: Juniper & Vine
+    team_domain: junipernvine   # the <team_domain>.slack.com address
+    aliases: [Juniper and Vine] # other ways you say the name
+  - client_code: KL
+    name: KiteLoop
+    team_domain: kiteloop
+    # frozen: true              # a hold: can't be read or connected until you remove this
+
+# Only if you also run this on a second, always-on Mac and copy logins to it:
+# second_mac:
+#   host: mini                  # its SSH name
+#   home: /Users/robin          # your home folder on that Mac
