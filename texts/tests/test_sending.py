@@ -230,6 +230,14 @@ def test_text_me(allowed, messages_app):
     assert blocked["blocked"]
 
 
+def test_reading_me_is_the_owners_own_thread(allowed):
+    assert call("read_texts", {"person": "me"})["status"] == "not_found"  # no number set yet
+    allowed.write_settings({**ALLOWED, "owner_numbers": ["+1 312 555 0101"]})
+    found = call("read_texts", {"person": "me"})
+    assert found["status"] == "ok", found
+    assert call("find_person", {"name": "myself"})["status"] == "ok"
+
+
 def test_text_me_needs_the_owners_number(allowed):
     with pytest.raises(TextsError, match="own number isn't set"):
         _preview(instruction="text me", person="me", text="x")

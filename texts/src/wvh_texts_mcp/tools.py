@@ -307,6 +307,11 @@ class Session:
         return {"status": "opted_out", "person": name, "note": f"{name} opted out. Their texts aren't read or sent to through this connector."}
 
     def resolve(self, query: str) -> Resolution:
+        # "Me" means the owner's own number for reading too, never a name with "me" in it.
+        if (query or "").strip().lower() in ("me", "myself"):
+            if not self.config.owner_handles:
+                return Resolution([], "")
+            query = sorted(self.config.owner_handles)[0]
         found = self.directory.resolve(query)
         if not self.config.clients_only:
             return found
@@ -320,6 +325,10 @@ class Session:
         if found.matched_by == "outside scope":
             return self.out_of_scope(query)
         if not found.people:
+            if (query or "").strip().lower() in ("me", "myself"):
+                return {"status": "not_found", "query": query,
+                        "note": f"{_cap(self.owner)}'s own number isn't set. Set it with: "
+                                f'{setup_command(self.config.install)} owner "{self.owner}" --number "<your number>"'}
             return {"status": "not_found", "query": query}
         if found.one is None:
             return self.ambiguous(query, found)

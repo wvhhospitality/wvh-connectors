@@ -1,6 +1,6 @@
 [project]
 name = "wvh-texts-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "Your text messages in Claude: read who you name, sweep only your list, and send only after you see it and say yes."
 readme = "README.md"
 requires-python = ">=3.11"

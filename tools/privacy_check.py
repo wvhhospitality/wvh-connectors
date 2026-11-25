@@ -55,6 +55,7 @@ SHAPES = [
     ("a private network address", re.compile(r"\b[a-z0-9-]+\.tail[0-9a-f]{4,}\.ts\.net\b|\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b|\b192\.168\.\d{1,3}\.\d{1,3}\b")),
 ]
 HOME_PATH = re.compile(r"/Users/([A-Za-z0-9._-]+)")
+TIME_ZONE = re.compile(r"(?:Africa|America|Antarctica|Asia|Atlantic|Australia|Europe|Indian|Pacific|Etc)/[A-Za-z_+-]+(?:/[A-Za-z_]+)?|UTC|GMT")
 
 
 # ─── Gathering the private words ──────────────────────────────────────────
@@ -145,8 +146,8 @@ def private_words() -> tuple[dict[str, set[str]], set[str]]:
 
     for item in raw:
         item = item.strip()
-        if not item:
-            continue
+        if not item or TIME_ZONE.fullmatch(item):
+            continue  # a time zone like America/Chicago is a setting, not a private detail
         for address in EMAIL.findall(item):
             words["email"].add(address.lower())
             domain = address.split("@", 1)[1].lower()
