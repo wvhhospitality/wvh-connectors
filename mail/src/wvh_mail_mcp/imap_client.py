@@ -156,10 +156,21 @@ class _Pooled:
     client: IMAPClient
     last_used: float = field(default_factory=time.time)
     folders: dict[str, str] = field(default_factory=dict)
+    # One conversation at a time per mailbox. A mail server answers in order on one
+    # line, so two callers talking at once read each other's answers and the line
+    # breaks. Re-entrant, so one caller may open the same mailbox twice in a row.
+    lock: threading.RLock = field(default_factory=threading.RLock)
+    # Callers holding this connection or waiting for it. The idle sweep leaves it alone.
+    users: int = 0
 
 
 class IMAPPool:
-    """One connection per mailbox, opened on demand and closed when idle."""
+    """One connection per mailbox, opened on demand and closed when idle.
+
+    Several tools can run at once, and one tool can ask the same mailbox several
+    questions in parallel. Each mailbox's connection is handed to one caller at a
+    time; the others wait their turn. Different mailboxes never wait on each other.
+    """
 
     def __init__(self, install: str) -> None:
         self.install = install
@@ -168,13 +179,35 @@ class IMAPPool:
 
     @contextmanager
     def connection(self, account: Account) -> Iterator[IMAPClient]:
-        pooled = self._acquire(account)
+        pooled = self._take_turn(account)
         try:
             yield pooled.client
         except (OSError, socket.error) as exc:
             log.warning("Connection problem for %s: %s", account.email, exc)
-            self._drop(account.email)
+            self._drop(account.email, pooled)
             raise
+        finally:
+            pooled.last_used = time.time()
+            pooled.lock.release()
+            with self._lock:
+                pooled.users -= 1
+
+    def _take_turn(self, account: Account) -> _Pooled:
+        """Wait for this mailbox's connection and return it, held for this caller alone."""
+        for attempt in range(3):
+            pooled = self._acquire(account)
+            with self._lock:
+                pooled.users += 1
+            pooled.lock.acquire()
+            with self._lock:
+                still_open = self._connections.get(account.email) is pooled
+            if still_open or attempt == 2:
+                return pooled
+            # The caller ahead of us hit a connection problem and closed it. Get a new one.
+            pooled.lock.release()
+            with self._lock:
+                pooled.users -= 1
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def folder(self, account: Account, client: IMAPClient, name: str | None) -> str:
         """inbox / sent / all / drafts / trash, or a folder's own name passed through."""
@@ -207,15 +240,24 @@ class IMAPPool:
             self._connections[account.email] = pooled
             return pooled
 
-    def _drop(self, address: str) -> None:
+    def _drop(self, address: str, only: _Pooled | None = None) -> None:
+        """Close a mailbox's connection. With `only`, hang up that one and take it out
+        of the pool only if it is still the one there, so a caller with a broken
+        connection can't close the new one someone else has since opened."""
         with self._lock:
-            pooled = self._connections.pop(address, None)
-        if pooled is not None:
-            _quiet_logout(pooled.client)
+            current = self._connections.get(address)
+            if current is not None and (only is None or current is only):
+                del self._connections[address]
+            else:
+                current = None
+        victim = only if only is not None else current
+        if victim is not None:
+            _quiet_logout(victim.client)
 
     def _reap_idle(self) -> None:
         now = time.time()
-        for key in [k for k, v in self._connections.items() if now - v.last_used > IDLE_TIMEOUT_SECONDS]:
+        for key in [k for k, v in self._connections.items()
+                    if v.users == 0 and now - v.last_used > IDLE_TIMEOUT_SECONDS]:
             pooled = self._connections.pop(key, None)
             if pooled:
                 _quiet_logout(pooled.client)

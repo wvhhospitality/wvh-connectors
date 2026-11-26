@@ -1,6 +1,6 @@
 [project]
 name = "wvh-mail-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "One Claude connector for every mailbox you have. Reads, searches, reads and saves attachments, drafts, and sends, replies and replies-all with files and signatures. Every send is shown to you first and goes out only after your yes."
 readme = "README.md"
 requires-python = ">=3.11"
